@@ -1,9 +1,9 @@
 
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { GoogleGenAI, Type } from "@google/genai";
 import { Invoice, TransactionType } from '../types';
 import { generateId, parseInvoiceOCR } from '../utils';
-import { CheckCircle, AlertTriangle, ScanLine, Calculator, RefreshCw, ArrowRightLeft, Lock, Loader2, Sparkles, X } from 'lucide-react';
+import { CheckCircle, AlertTriangle, ScanLine, Calculator, RefreshCw, ArrowRightLeft, Lock, Loader2, Sparkles, X, UploadCloud, FileText } from 'lucide-react';
 import { SingleDatePicker } from './SingleDatePicker';
 
 interface InvoiceFormProps {
@@ -15,7 +15,9 @@ interface InvoiceFormProps {
 const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate }) => {
   const [mode, setMode] = useState<'MANUAL' | 'UPLOAD'>('MANUAL');
   const [ocrText, setOcrText] = useState('');
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [formData, setFormData] = useState({
     date: new Date().toISOString().split('T')[0],
@@ -45,33 +47,85 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
       }
   };
 
+  const fileToBase64 = (file: File): Promise<string> => {
+    return new Promise((resolve, reject) => {
+      const reader = new FileReader();
+      reader.readAsDataURL(file);
+      reader.onload = () => {
+        const result = reader.result as string;
+        // Remove the data URL prefix (e.g., "data:application/pdf;base64,")
+        const base64 = result.split(',')[1];
+        resolve(base64);
+      };
+      reader.onerror = error => reject(error);
+    });
+  };
+
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files && e.target.files[0]) {
+      setSelectedFile(e.target.files[0]);
+      setOcrText(''); // Clear text if file is selected
+    }
+  };
+
   const handleOcrProcess = async () => {
-      if (!ocrText.trim()) return;
+      if (!ocrText.trim() && !selectedFile) return;
       setIsProcessing(true);
       setError('');
+
       try {
           const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
+          let contents = [];
+
+          // Schema definition for structured output
+          const responseSchema = {
+            type: Type.OBJECT,
+            properties: {
+                date: { type: Type.STRING, description: "Invoice Date in YYYY-MM-DD format" },
+                type: { type: Type.STRING, enum: ["PURCHASE", "SALE"], description: "Transaction type based on invoice context" },
+                partyName: { type: Type.STRING, description: "Name of the Supplier or Customer" },
+                quantityGrams: { type: Type.NUMBER, description: "Total weight of gold in grams" },
+                ratePerGram: { type: Type.NUMBER, description: "Price per gram of gold" },
+                gstRate: { type: Type.NUMBER, description: "GST Percentage (e.g. 3)" }
+            },
+            required: ["date", "type", "partyName", "quantityGrams", "ratePerGram"]
+          };
+
+          if (selectedFile) {
+              // Multimodal Request (PDF/Image)
+              const base64Data = await fileToBase64(selectedFile);
+              contents = [
+                  {
+                      inlineData: {
+                          mimeType: selectedFile.type,
+                          data: base64Data
+                      }
+                  },
+                  {
+                      text: "Analyze this invoice document. Extract the following details: Date, Party Name, Transaction Type (Sale/Purchase), Quantity (Grams), Rate (Price/Gram), and GST %. If there are multiple items, sum the gold quantity. If Rate is not explicit, calculate it as TaxableValue / Quantity."
+                  }
+              ];
+          } else {
+              // Text-only Request
+              contents = [
+                  {
+                      text: `Extract invoice details from this text. Purchase or Sale? Party Name? Date? Total Grams? Rate? GST Rate? Text: ${ocrText}`
+                  }
+              ];
+          }
+
           const response = await ai.models.generateContent({
-            model: 'gemini-3-flash-preview',
-            contents: `Extract invoice details. Purchase or Sale? Party Name? Date? Total Grams? Rate? GST Rate? Text: ${ocrText}`,
+            model: 'gemini-2.0-flash-exp', // Using Flash 2.0 for efficient document understanding
+            contents: contents,
             config: {
                 responseMimeType: "application/json",
-                responseSchema: {
-                    type: Type.OBJECT,
-                    properties: {
-                        date: { type: Type.STRING },
-                        type: { type: Type.STRING, enum: ["PURCHASE", "SALE"] },
-                        partyName: { type: Type.STRING },
-                        quantityGrams: { type: Type.NUMBER },
-                        ratePerGram: { type: Type.NUMBER },
-                        gstRate: { type: Type.NUMBER }
-                    },
-                    required: ["date", "type", "partyName", "quantityGrams", "ratePerGram"]
-                }
+                responseSchema: responseSchema
             }
           });
+
           const data = JSON.parse(response.text || "{}");
-          if (data && data.partyName) {
+          
+          if (data && (data.partyName || data.quantityGrams)) {
                setFormData({
                   date: data.date || new Date().toISOString().split('T')[0],
                   type: (data.type as TransactionType) || 'PURCHASE',
@@ -80,27 +134,37 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
                   ratePerGram: data.ratePerGram?.toString() || '',
                   gstRate: data.gstRate?.toString() || '3',
               });
-              setMode('MANUAL');
+              setMode('MANUAL'); // Switch back to manual for verification
+              setSelectedFile(null); // Clear file after processing
               return;
           }
-          throw new Error("Empty data");
+          throw new Error("Could not extract valid data");
+
       } catch (err) {
-          const result = parseInvoiceOCR(ocrText);
-          if (result) {
-              setFormData({
-                  ...formData,
-                  date: result.date || formData.date,
-                  partyName: result.partyName || formData.partyName,
-                  quantityGrams: result.quantity > 0 ? result.quantity.toString() : '',
-                  ratePerGram: result.rate > 0 ? result.rate.toString() : '',
-                  gstRate: result.gstRate ? result.gstRate.toString() : formData.gstRate,
-                  type: result.isSale ? 'SALE' : 'PURCHASE'
-              });
-              setMode('MANUAL'); 
+          console.error(err);
+          // Fallback for text-only legacy parser if Gemini fails (only works for text input)
+          if (!selectedFile && ocrText) {
+              const result = parseInvoiceOCR(ocrText);
+              if (result) {
+                  setFormData({
+                      ...formData,
+                      date: result.date || formData.date,
+                      partyName: result.partyName || formData.partyName,
+                      quantityGrams: result.quantity > 0 ? result.quantity.toString() : '',
+                      ratePerGram: result.rate > 0 ? result.rate.toString() : '',
+                      gstRate: result.gstRate ? result.gstRate.toString() : formData.gstRate,
+                      type: result.isSale ? 'SALE' : 'PURCHASE'
+                  });
+                  setMode('MANUAL'); 
+              } else {
+                  setError('Auto-extraction failed. Please enter details manually.');
+              }
           } else {
-              setError('Could not extract data automatically. Please enter manually.');
+              setError('Could not process the document. Please try again or enter manually.');
           }
-      } finally { setIsProcessing(false); }
+      } finally { 
+          setIsProcessing(false); 
+      }
   };
 
   const calculateTotals = () => {
@@ -129,6 +193,7 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
     });
     setFormData({ date: new Date().toISOString().split('T')[0], type: 'PURCHASE', partyName: '', quantityGrams: '', ratePerGram: '', gstRate: '3' });
     setOcrText('');
+    setSelectedFile(null);
   };
 
   const inputClass = "w-full px-4 py-2.5 bg-slate-50 border border-slate-200 rounded-xl text-sm font-medium focus:ring-2 focus:ring-gold-500/20 focus:border-gold-500 outline-none transition-all placeholder:text-slate-400 hover:border-slate-300";
@@ -155,14 +220,62 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
             
             {mode === 'UPLOAD' ? (
                 <div className="space-y-4 animate-fade-in">
-                    <div className="border-2 border-dashed border-slate-200 rounded-2xl p-6 flex flex-col items-center justify-center hover:bg-slate-50 hover:border-gold-400 transition-all cursor-text relative group overflow-hidden min-h-[250px]">
-                        <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-3 text-slate-400 group-hover:scale-110 transition-transform"><ScanLine className="w-6 h-6" /></div>
-                        <p className="font-medium text-slate-900 text-center text-sm">Paste Invoice Text</p>
-                        <textarea className="absolute inset-0 opacity-0 cursor-text p-6 text-sm font-mono bg-transparent z-10" value={ocrText} onChange={(e) => setOcrText(e.target.value)} />
-                        {ocrText && <div className="absolute inset-0 p-6 bg-slate-50 text-xs font-mono overflow-auto opacity-50 pointer-events-none whitespace-pre-wrap">{ocrText}</div>}
+                    <input 
+                        type="file" 
+                        accept="application/pdf,image/*" 
+                        ref={fileInputRef} 
+                        onChange={handleFileChange} 
+                        className="hidden" 
+                    />
+                    
+                    <div 
+                        onClick={() => fileInputRef.current?.click()}
+                        className={`border-2 border-dashed rounded-2xl p-6 flex flex-col items-center justify-center transition-all cursor-pointer relative group overflow-hidden min-h-[250px]
+                            ${selectedFile ? 'border-gold-400 bg-gold-50/20' : 'border-slate-200 hover:bg-slate-50 hover:border-gold-400'}`}
+                    >
+                        {selectedFile ? (
+                            <div className="flex flex-col items-center text-center z-10 animate-fade-in">
+                                <div className="w-12 h-12 bg-white rounded-xl shadow-sm border border-gold-200 flex items-center justify-center mb-3 text-gold-600">
+                                    {selectedFile.type.includes('pdf') ? <FileText className="w-6 h-6" /> : <ScanLine className="w-6 h-6" />}
+                                </div>
+                                <p className="font-bold text-slate-900 text-sm mb-1">{selectedFile.name}</p>
+                                <p className="text-xs text-slate-500">{(selectedFile.size / 1024).toFixed(1)} KB</p>
+                                <button 
+                                    onClick={(e) => { e.stopPropagation(); setSelectedFile(null); }} 
+                                    className="mt-3 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs font-bold text-red-500 hover:bg-red-50 hover:border-red-100 transition-colors"
+                                >
+                                    Remove File
+                                </button>
+                            </div>
+                        ) : (
+                            <>
+                                <div className="w-12 h-12 bg-slate-100 rounded-full flex items-center justify-center mb-3 text-slate-400 group-hover:scale-110 transition-transform group-hover:text-gold-500 group-hover:bg-gold-50">
+                                    <UploadCloud className="w-6 h-6" />
+                                </div>
+                                <p className="font-medium text-slate-900 text-center text-sm">Click to Upload PDF Invoice</p>
+                                <p className="text-xs text-slate-400 mt-1">or paste extracted text below</p>
+                            </>
+                        )}
+
+                        {/* Fallback Text Area for Manual Paste if no file */}
+                        {!selectedFile && (
+                            <textarea 
+                                className="absolute inset-x-0 bottom-0 h-1/3 opacity-0 group-hover:opacity-100 transition-opacity p-4 text-xs font-mono bg-white/90 border-t border-slate-200 focus:opacity-100 focus:bg-white outline-none resize-none" 
+                                placeholder="Alternatively, paste text content here..."
+                                value={ocrText}
+                                onClick={(e) => e.stopPropagation()}
+                                onChange={(e) => setOcrText(e.target.value)} 
+                            />
+                        )}
                     </div>
-                    <button onClick={handleOcrProcess} disabled={!ocrText || isProcessing} className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-bold hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/20 text-sm">
-                        {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-gold-400"/> : <Sparkles className="w-4 h-4 text-gold-400"/>} Process Invoice
+
+                    <button 
+                        onClick={handleOcrProcess} 
+                        disabled={(!ocrText && !selectedFile) || isProcessing} 
+                        className="w-full bg-slate-900 text-white py-3.5 rounded-xl font-bold hover:bg-slate-800 disabled:opacity-50 flex items-center justify-center gap-2 shadow-lg shadow-slate-900/20 text-sm"
+                    >
+                        {isProcessing ? <Loader2 className="w-4 h-4 animate-spin text-gold-400"/> : <Sparkles className="w-4 h-4 text-gold-400"/>} 
+                        {selectedFile ? 'Process Document' : 'Process Text'}
                     </button>
                 </div>
             ) : (
