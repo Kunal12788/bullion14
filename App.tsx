@@ -70,6 +70,11 @@ function App() {
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
   
+  // Delete Modal State
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  
   const [dateRange, setDateRange] = useState({
       start: getDateDaysAgo(30),
       end: new Date().toISOString().split('T')[0]
@@ -232,6 +237,83 @@ function App() {
     return list;
   }, [agingStats, invoices]);
 
+  // Recalculates entire inventory from scratch based on a list of invoices
+  // This ensures FIFO integrity is maintained even after deleting a historical transaction
+  const recalculateAllData = (allInvoices: Invoice[]) => {
+    // Sort by date ascending for correct FIFO processing
+    const sorted = [...allInvoices].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+    let currentInventory: InventoryBatch[] = [];
+    const processedInvoices: Invoice[] = [];
+
+    for (const inv of sorted) {
+        if (inv.type === 'PURCHASE') {
+            const newBatch: InventoryBatch = {
+                id: inv.id,
+                date: inv.date,
+                originalQuantity: inv.quantityGrams,
+                remainingQuantity: inv.quantityGrams,
+                costPerGram: inv.ratePerGram
+            };
+            currentInventory.push(newBatch);
+            processedInvoices.push(inv);
+        } else {
+            // SALE Logic
+            let remainingToSell = inv.quantityGrams;
+            let totalCOGS = 0;
+            
+            for (const batch of currentInventory) {
+                if (remainingToSell <= 0) break;
+                if (batch.remainingQuantity > 0) {
+                    const take = Math.min(batch.remainingQuantity, remainingToSell);
+                    batch.remainingQuantity -= take;
+                    remainingToSell -= take;
+                    totalCOGS += (take * batch.costPerGram);
+                    
+                    if (batch.remainingQuantity < 0.0001) {
+                         batch.remainingQuantity = 0;
+                         batch.closedDate = inv.date;
+                    }
+                }
+            }
+            
+            // If remainingToSell > 0 here, it means we sold stock we didn't have (FIFO broke).
+            // In a strict system we block this, but for recalculation we proceed with best effort.
+            
+            const profit = (inv.taxableAmount || (inv.quantityGrams * inv.ratePerGram)) - totalCOGS;
+            processedInvoices.push({ ...inv, cogs: totalCOGS, profit });
+        }
+    }
+    
+    return {
+        updatedInvoices: processedInvoices,
+        updatedInventory: currentInventory
+    };
+  };
+
+  const initiateDelete = (id: string) => {
+      setDeleteId(id);
+      setDeletePassword('');
+      setShowDeleteModal(true);
+  };
+
+  const confirmDelete = () => {
+      if (deletePassword === 'QAZ@789') {
+          if (deleteId) {
+              const remainingInvoices = invoices.filter(i => i.id !== deleteId);
+              const { updatedInvoices, updatedInventory } = recalculateAllData(remainingInvoices);
+              
+              setInvoices(updatedInvoices);
+              setInventory(updatedInventory);
+              addToast('SUCCESS', 'Record deleted and data recalculated.');
+          }
+          setShowDeleteModal(false);
+          setDeleteId(null);
+          setDeletePassword('');
+      } else {
+          addToast('ERROR', 'Incorrect Admin Password.');
+      }
+  };
+
   const handleAddInvoice = (invoice: Invoice) => {
     if (invoice.type === 'PURCHASE') {
         setInvoices(prev => [invoice, ...prev]); 
@@ -239,6 +321,21 @@ function App() {
         setInventory(prev => [...prev, newBatch].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
         addToast('SUCCESS', 'Purchase recorded & Inventory Updated');
     } else {
+        // Optimization: For adding a new sale (latest date usually), we can just do incremental update
+        // instead of full recalc. However, if user adds a back-dated sale, full recalc is safer.
+        // For now, keeping the optimized incremental logic for standard usage, but if date is older than latest invoice, we should recalc.
+        
+        const latestInvoiceDate = invoices.length > 0 ? invoices[0].date : '';
+        if (latestInvoiceDate && invoice.date < latestInvoiceDate) {
+             // Back-dated transaction: Use full recalculation
+             const newInvoices = [...invoices, invoice];
+             const { updatedInvoices, updatedInventory } = recalculateAllData(newInvoices);
+             setInvoices(updatedInvoices.reverse()); // Store descending
+             setInventory(updatedInventory);
+             addToast('SUCCESS', 'Back-dated Sale recorded. History Recalculated.');
+             return;
+        }
+
         let remainingToSell = invoice.quantityGrams;
         let totalCOGS = 0;
         const newInventory = JSON.parse(JSON.stringify(inventory)) as InventoryBatch[];
@@ -408,13 +505,14 @@ function App() {
        const data = [...filteredInvoices].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
        
        if (type === 'CSV') {
-           const headers = ['Date', 'Type', 'Party', 'Qty (g)', 'Rate (INR/g)', 'My Cost (INR/g)', 'Taxable (Ex GST)', 'GST (INR)', 'Total (Inc GST)', 'Profit (Ex GST)'];
+           const headers = ['Date', 'Type', 'Party', 'Qty (g)', 'Rate (INR/g)', 'My Cost (INR/g)', 'Taxable (Ex GST)', 'GST (INR)', 'Total (Inc GST)', 'My Total Cost (Ex GST)', 'Profit (Ex GST)'];
            const csv = [
                headers.join(','),
                ...data.map(i => {
                    const myCost = i.type === 'SALE' && i.cogs ? (i.cogs / i.quantityGrams) : 0;
+                   const myTotalCost = i.type === 'SALE' ? (i.cogs || 0) : i.taxableAmount;
                    return [
-                       i.date, i.type, `"${i.partyName}"`, i.quantityGrams, i.ratePerGram, myCost > 0 ? myCost.toFixed(2) : '-', i.taxableAmount, i.gstAmount, i.totalAmount, i.profit || 0
+                       i.date, i.type, `"${i.partyName}"`, i.quantityGrams, i.ratePerGram, myCost > 0 ? myCost.toFixed(2) : '-', i.taxableAmount, i.gstAmount, i.totalAmount, myTotalCost, i.profit || 0
                    ].join(',')
                })
            ].join('\n');
@@ -422,9 +520,10 @@ function App() {
            addToast('SUCCESS', 'Transactions CSV downloaded.');
        } else {
            generatePDF('Transaction Report', 
-             [['Date', 'Type', 'Party', 'Qty', 'Rate', 'My Cost', 'Taxable', 'GST', 'Total', 'Profit']],
+             [['Date', 'Type', 'Party', 'Qty', 'Rate', 'My Cost', 'Taxable', 'GST', 'Total', 'My Total Cost', 'Profit']],
              data.map(i => {
                  const myCost = i.type === 'SALE' && i.cogs ? (i.cogs / i.quantityGrams) : 0;
+                 const myTotalCost = i.type === 'SALE' ? (i.cogs || 0) : i.taxableAmount;
                  return [
                      i.date, 
                      i.type.substring(0,1), 
@@ -435,6 +534,7 @@ function App() {
                      formatCurrency(i.taxableAmount), 
                      formatCurrency(i.gstAmount), 
                      formatCurrency(i.totalAmount), 
+                     formatCurrency(myTotalCost),
                      i.profit ? formatCurrency(i.profit) : '-'
                  ]
              })
@@ -442,7 +542,225 @@ function App() {
        }
   };
 
+  const renderDateFilter = () => (
+      <DateRangePicker startDate={dateRange.start} endDate={dateRange.end} onChange={(start, end) => setDateRange({ start, end })} />
+  );
+
   // --- SUB-VIEWS ---
+
+  const DashboardView = () => {
+      // Calculate basic stats
+      const totalStock = currentStock; 
+      const stockValue = fifoValue; 
+      const recentProfit = dailyProfit.reduce((sum, d) => sum + d.profit, 0);
+
+      return (
+          <div className="space-y-6 animate-enter">
+              <SectionHeader 
+                  title="Dashboard" 
+                  subtitle="Overview of your inventory and financial health." 
+                  action={renderDateFilter()}
+              />
+
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+                  <StatsCard 
+                      title="Current Stock" 
+                      value={formatGrams(totalStock)} 
+                      subValue={`${inventory.length} Batches`} 
+                      icon={Coins} 
+                      isActive
+                  />
+                  <StatsCard 
+                      title="Inventory Value" 
+                      value={formatCurrency(stockValue)} 
+                      subValue="FIFO Basis" 
+                      icon={Scale} 
+                      delayIndex={1}
+                  />
+                  <StatsCard 
+                      title="Net Profit" 
+                      value={formatCurrency(recentProfit)} 
+                      subValue="Selected Period" 
+                      icon={TrendingUp} 
+                      delayIndex={2}
+                  />
+                  <StatsCard 
+                      title="Transactions" 
+                      value={filteredInvoices.length.toString()} 
+                      subValue={`${filteredInvoices.filter(i => i.type === 'SALE').length} Sales`} 
+                      icon={ArrowRightLeft} 
+                      delayIndex={3}
+                  />
+              </div>
+
+              {alerts.length > 0 && (
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                      {alerts.map((alert, idx) => (
+                          <div key={idx} className={`p-4 rounded-xl border flex items-start gap-4 ${alert.severity === 'HIGH' ? 'bg-red-50 border-red-100 text-red-800' : 'bg-amber-50 border-amber-100 text-amber-800'}`}>
+                              <div className={`p-2 rounded-lg ${alert.severity === 'HIGH' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}>
+                                  <AlertTriangle className="w-5 h-5" />
+                              </div>
+                              <div>
+                                  <h4 className="font-bold text-sm uppercase tracking-wide mb-1">{alert.context}: {alert.severity} Risk</h4>
+                                  <p className="text-sm">{alert.message}</p>
+                              </div>
+                          </div>
+                      ))}
+                  </div>
+              )}
+
+              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                  <Card title="Profit Trend" className="lg:col-span-2 min-h-[350px]">
+                        <div className="h-[300px] w-full">
+                            <ResponsiveContainer width="100%" height="100%">
+                                <AreaChart data={profitTrendData}>
+                                    <defs>
+                                        <linearGradient id="colorProfitDb" x1="0" y1="0" x2="0" y2="1">
+                                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
+                                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
+                                        </linearGradient>
+                                    </defs>
+                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
+                                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
+                                    <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} tickFormatter={(v) => `${v/1000}k`}/>
+                                    <Tooltip 
+                                        contentStyle={{backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'}} 
+                                        formatter={(value: number) => [formatCurrency(value), 'Net Profit']}
+                                    />
+                                    <Area type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorProfitDb)" />
+                                </AreaChart>
+                            </ResponsiveContainer>
+                        </div>
+                  </Card>
+
+                  <Card title="Quick Actions" className="lg:col-span-1">
+                      <div className="space-y-3">
+                          <button onClick={() => setActiveTab('invoices')} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-gold-200 hover:shadow-md transition-all flex items-center gap-3 text-left group">
+                              <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-gold-50 text-gold-600 transition-colors"><FileText className="w-5 h-5"/></div>
+                              <div>
+                                  <h4 className="font-bold text-slate-900">New Invoice</h4>
+                                  <p className="text-xs text-slate-500">Record purchase or sale</p>
+                              </div>
+                              <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-gold-500"/>
+                          </button>
+                          <button onClick={() => setActiveTab('inventory')} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-200 hover:shadow-md transition-all flex items-center gap-3 text-left group">
+                              <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-blue-50 text-blue-600 transition-colors"><ArrowUpRight className="w-5 h-5"/></div>
+                              <div>
+                                  <h4 className="font-bold text-slate-900">Check Stock</h4>
+                                  <p className="text-xs text-slate-500">View inventory batches</p>
+                              </div>
+                              <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-blue-500"/>
+                          </button>
+                          <button onClick={() => window.print()} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-slate-300 hover:shadow-md transition-all flex items-center gap-3 text-left group">
+                              <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-slate-100 text-slate-600 transition-colors"><FileDown className="w-5 h-5"/></div>
+                              <div>
+                                  <h4 className="font-bold text-slate-900">Print Report</h4>
+                                  <p className="text-xs text-slate-500">Export current view</p>
+                              </div>
+                              <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-slate-500"/>
+                          </button>
+                      </div>
+                  </Card>
+              </div>
+          </div>
+      );
+  };
+
+  const CustomerInsightsView = () => {
+       const COLORS = ['#d19726', '#e4c76d', '#b4761e', '#f5eccb', '#90561a', '#94a3b8'];
+       const pieData = customerData.slice(0, 5).map(c => ({ name: c.name, value: c.totalGrams }));
+       const others = customerData.slice(5).reduce((acc, c) => acc + c.totalGrams, 0);
+       if (others > 0) pieData.push({ name: 'Others', value: others });
+
+       return (
+           <div className="space-y-6 animate-enter">
+                <SectionHeader 
+                    title="Customer Intelligence" 
+                    subtitle="Analyze customer behavior and profitability." 
+                    action={
+                        <div className="flex gap-2 items-center">
+                            <ExportMenu onExport={handleCustomerExport} />
+                            {renderDateFilter()}
+                        </div>
+                    }
+                />
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+                    {customerData.slice(0, 3).map((c, i) => (
+                        <div key={i} className="bg-white p-6 rounded-2xl shadow-card border border-slate-100 relative overflow-hidden group hover:-translate-y-1 transition-transform duration-300">
+                             <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-slate-50 to-slate-100 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110"></div>
+                             <div className="relative z-10 flex justify-between items-start mb-4">
+                                 <div>
+                                     <div className="flex items-center gap-2 mb-1">
+                                        <h3 className="font-bold text-lg text-slate-900 truncate max-w-[150px]">{c.name}</h3>
+                                        {i === 0 && <Crown className="w-4 h-4 text-gold-500 fill-gold-500" />}
+                                     </div>
+                                     <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-bold uppercase tracking-wide">{c.behaviorPattern.split('(')[0]}</span>
+                                 </div>
+                                 <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center font-bold shadow-lg">
+                                     #{i+1}
+                                 </div>
+                             </div>
+                             <div className="relative z-10 space-y-2">
+                                 <div className="flex justify-between text-sm"><span className="text-slate-500">Total Bought</span><span className="font-mono font-bold">{formatGrams(c.totalGrams)}</span></div>
+                                 <div className="flex justify-between text-sm"><span className="text-slate-500">Revenue</span><span className="font-mono font-bold text-slate-700">{formatCurrency(c.totalSpend)}</span></div>
+                                 <div className="flex justify-between text-sm"><span className="text-slate-500">Profit Contrib.</span><span className="font-mono font-bold text-green-600">{formatCurrency(c.profitContribution)}</span></div>
+                             </div>
+                        </div>
+                    ))}
+                </div>
+
+                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+                     <Card title="Customer Database" className="lg:col-span-2">
+                          <div className="overflow-x-auto">
+                              <table className="w-full text-sm text-left">
+                                  <thead className="text-slate-500 bg-slate-50/50">
+                                      <tr>
+                                          <th className="px-4 py-3">Customer</th>
+                                          <th className="px-4 py-3 text-center">Tx Freq</th>
+                                          <th className="px-4 py-3 text-right">Volume</th>
+                                          <th className="px-4 py-3 text-right">Avg Price</th>
+                                          <th className="px-4 py-3 text-right">Margin</th>
+                                          <th className="px-4 py-3 text-right">Total Profit</th>
+                                      </tr>
+                                  </thead>
+                                  <tbody>
+                                      {customerData.map((c, i) => (
+                                          <tr key={i} className="hover:bg-slate-50 border-b border-slate-50">
+                                              <td className="px-4 py-3 font-medium text-slate-900">{c.name}</td>
+                                              <td className="px-4 py-3 text-center text-slate-500">{c.txCount}</td>
+                                              <td className="px-4 py-3 text-right font-mono text-slate-600">{formatGrams(c.totalGrams)}</td>
+                                              <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(c.avgSellingPrice || 0)}</td>
+                                              <td className="px-4 py-3 text-right">
+                                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${c.margin && c.margin > 1.5 ? 'bg-green-50 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
+                                                      {c.margin ? c.margin.toFixed(2) : '0.00'}%
+                                                  </span>
+                                              </td>
+                                              <td className="px-4 py-3 text-right font-mono font-bold text-green-600">{formatCurrency(c.profitContribution)}</td>
+                                          </tr>
+                                      ))}
+                                  </tbody>
+                              </table>
+                          </div>
+                     </Card>
+
+                     <Card title="Volume Share" className="min-h-[350px]">
+                         <ResponsiveContainer width="100%" height={300}>
+                             <PieChart>
+                                 <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                                     {pieData.map((entry, index) => (
+                                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                                     ))}
+                                 </Pie>
+                                 <Tooltip formatter={(val:number) => formatGrams(val)} contentStyle={{borderRadius: '8px'}} />
+                                 <Legend verticalAlign="bottom" height={36}/>
+                             </PieChart>
+                         </ResponsiveContainer>
+                     </Card>
+                </div>
+           </div>
+       );
+  };
 
   const PriceAnalysisView = () => {
       const priceMetrics = useMemo(() => {
@@ -697,12 +1015,14 @@ function App() {
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Taxable (Ex GST)</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">GST</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Inc)</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Total Cost (Ex GST)</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Profit</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-center">Action</th>
                               </tr>
                           </thead>
                           <tbody>
                               {filteredInvoices.length === 0 ? (
-                                  <tr><td colSpan={10} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
+                                  <tr><td colSpan={12} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
                               ) : (
                                   filteredInvoices.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((inv, i) => {
                                       const myCostPerGram = inv.type === 'SALE' && inv.cogs ? inv.cogs / inv.quantityGrams : null;
@@ -721,8 +1041,16 @@ function App() {
                                           <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-medium text-slate-900 text-right">{formatCurrency(inv.taxableAmount)}</td>
                                           <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">{formatCurrency(inv.gstAmount)}</td>
                                           <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-400 text-right">{formatCurrency(inv.totalAmount)}</td>
-                                          <td className={`px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-r border-transparent group-hover:border-slate-100 font-mono font-bold text-right rounded-r-xl ${inv.profit && inv.profit > 0 ? 'text-green-600' : 'text-slate-300'}`}>
+                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-medium text-slate-700 text-right">
+                                              {formatCurrency(inv.type === 'SALE' ? (inv.cogs || 0) : inv.taxableAmount)}
+                                          </td>
+                                          <td className={`px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-bold text-right ${(inv.profit || 0) > 0 ? 'text-green-600' : (inv.profit || 0) < 0 ? 'text-red-600' : 'text-slate-300'}`}>
                                               {inv.type === 'SALE' ? formatCurrency(inv.profit || 0) : '-'}
+                                          </td>
+                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-r border-transparent group-hover:border-slate-100 rounded-r-xl text-center">
+                                              <button onClick={() => initiateDelete(inv.id)} className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors">
+                                                  <Trash2 className="w-4 h-4"/>
+                                              </button>
                                           </td>
                                       </tr>
                                   )})
@@ -735,125 +1063,32 @@ function App() {
       </div>
   );
 
-  const DashboardView = () => (
-    <div className="space-y-6 animate-enter">
-       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <StatsCard title="Current Stock" value={formatGrams(currentStock)} subValue="On Hand" icon={Scale} isActive delayIndex={0} />
-          <StatsCard title="Inventory Value" value={formatCurrency(fifoValue)} subValue="FIFO (Ex GST)" icon={Coins} delayIndex={1} />
-          <StatsCard title="Net Profit" value={formatCurrency(totalProfit)} subValue="Realized (Ex GST)" icon={TrendingUp} delayIndex={2} />
-           <StatsCard title="Profit Margin" value={`${profitMargin.toFixed(2)}%`} subValue="Avg. Margin (Ex Tax)" icon={Percent} delayIndex={3} />
-       </div>
+  const SupplierInsightsView = () => {
+    // Prepare Chart Data
+    const { volumeData, valueData } = useMemo(() => {
+        const sortedByVol = [...supplierData].sort((a,b) => b.totalGramsPurchased - a.totalGramsPurchased);
+        const sortedByVal = [...supplierData].sort((a,b) => (b.totalGramsPurchased * b.avgRate) - (a.totalGramsPurchased * a.avgRate));
 
-       {alerts.length > 0 && (
-         <div className="bg-red-50 border border-red-100 rounded-2xl p-4 flex flex-col gap-2 animate-slide-up">
-            <h3 className="text-red-800 font-bold flex items-center gap-2"><AlertTriangle className="w-5 h-5"/> Risk Alerts</h3>
-            {alerts.map(alert => (
-              <div key={alert.id} className="flex items-center justify-between text-sm text-red-700 bg-white p-3 rounded-xl border border-red-100 shadow-sm">
-                 <span>{alert.message}</span>
-                 <span className="text-[10px] font-bold uppercase px-2 py-1 bg-red-100 rounded">{alert.severity}</span>
-              </div>
-            ))}
-         </div>
-       )}
+        const generatePie = (data: typeof supplierData, metric: 'vol' | 'val') => {
+            const mapped = data.map(s => ({
+                name: s.name,
+                value: metric === 'vol' ? s.totalGramsPurchased : (s.totalGramsPurchased * s.avgRate)
+            }));
+            const top = mapped.slice(0, 5);
+            const others = mapped.slice(5).reduce((acc, curr) => acc + curr.value, 0);
+            if(others > 0) top.push({ name: 'Others', value: others });
+            return top;
+        };
 
-       <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-          <Card title="Sales & Profit Trend" delay={400}>
-              <div className="h-72 w-full">
-                  <ResponsiveContainer>
-                      <ComposedChart data={profitTrendData}>
-                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
-                          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
-                          <YAxis yAxisId="left" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} />
-                          <YAxis yAxisId="right" orientation="right" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} />
-                          <Tooltip contentStyle={{borderRadius: '12px'}}/>
-                          <Bar yAxisId="left" dataKey="profit" fill="#d19726" radius={[4, 4, 0, 0]} barSize={20} name="Profit" />
-                          <Line yAxisId="right" type="monotone" dataKey="ppg" stroke="#10b981" strokeWidth={2} dot={false} name="Profit/g" />
-                      </ComposedChart>
-                  </ResponsiveContainer>
-              </div>
-          </Card>
-          
-           <Card title="Stock Aging Analysis" delay={500}>
-              <div className="flex flex-col h-full justify-center space-y-6">
-                 <div className="grid grid-cols-2 gap-4">
-                     {Object.entries(agingStats.buckets).map(([range, qty], idx) => (
-                         <div key={range} className="p-4 bg-slate-50 rounded-xl border border-slate-100">
-                             <p className="text-xs text-slate-400 font-bold uppercase mb-1">{range} Days</p>
-                             <p className="text-xl font-mono font-bold text-slate-800">{formatGrams(qty)}</p>
-                             <div className="w-full bg-slate-200 h-1 mt-2 rounded-full overflow-hidden">
-                                 <div className="h-full bg-gold-500" style={{ width: `${currentStock > 0 ? (qty/currentStock)*100 : 0}%`}}></div>
-                             </div>
-                         </div>
-                     ))}
-                 </div>
-                 <p className="text-center text-sm text-slate-500">
-                    Weighted Average Age: <span className="font-bold text-slate-900">{Math.round(agingStats.weightedAvgDays)} Days</span>
-                 </p>
-              </div>
-          </Card>
-       </div>
-    </div>
-  );
+        return {
+            volumeData: generatePie(sortedByVol, 'vol'),
+            valueData: generatePie(sortedByVal, 'val')
+        };
+    }, [supplierData]);
 
-  const CustomerInsightsView = () => (
-    <div className="space-y-6 animate-enter">
-       <SectionHeader 
-            title="Customer Intelligence" 
-            subtitle="Analyze purchasing patterns and profitability." 
-            action={
-                <div className="flex gap-2 items-center">
-                    <ExportMenu onExport={handleCustomerExport} />
-                    {renderDateFilter()}
-                </div>
-            }
-       />
-       
-       <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-2">
-            <StatsCard title="Active Customers" value={customerData.length.toString()} icon={Users} delayIndex={0} />
-            <StatsCard title="Avg Transaction Value" value={formatCurrency(customerData.reduce((acc, c) => acc + c.avgSellingPrice, 0) / (customerData.length || 1))} icon={Coins} delayIndex={1} />
-            <StatsCard title="Top Buyer Vol" value={formatGrams(Math.max(...customerData.map(c => c.totalGrams), 0))} icon={Crown} delayIndex={2} />
-       </div>
+    const COLORS = ['#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#6366f1', '#94a3b8'];
 
-       <Card title="Customer Database">
-            <div className="overflow-x-auto">
-                <table className="w-full text-sm text-left">
-                    <thead className="text-slate-500 bg-slate-50/50">
-                        <tr>
-                            <th className="px-4 py-3">Customer Name</th>
-                            <th className="px-4 py-3 text-center">Tx Count</th>
-                            <th className="px-4 py-3 text-right">Total Grams</th>
-                            <th className="px-4 py-3 text-right">Revenue (Ex Tax)</th>
-                            <th className="px-4 py-3 text-right">Profit Contrib.</th>
-                            <th className="px-4 py-3 text-right">Margin %</th>
-                            <th className="px-4 py-3">Behavior Tag</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {customerData.map((c, i) => (
-                            <tr key={i} className="hover:bg-slate-50 border-b border-slate-50">
-                                <td className="px-4 py-3 font-bold text-slate-800">{c.name}</td>
-                                <td className="px-4 py-3 text-center text-slate-500">{c.txCount}</td>
-                                <td className="px-4 py-3 text-right font-mono text-slate-700">{formatGrams(c.totalGrams)}</td>
-                                <td className="px-4 py-3 text-right font-mono text-slate-700">{formatCurrency(c.totalSpend)}</td>
-                                <td className="px-4 py-3 text-right font-mono text-green-600 font-bold">{formatCurrency(c.profitContribution)}</td>
-                                <td className="px-4 py-3 text-right font-mono">
-                                    <span className={`px-2 py-1 rounded text-xs font-bold ${c.margin > 1 ? 'bg-green-100 text-green-700' : 'bg-amber-100 text-amber-700'}`}>
-                                        {c.margin.toFixed(2)}%
-                                    </span>
-                                </td>
-                                <td className="px-4 py-3">
-                                    <span className="text-[10px] font-bold uppercase text-slate-500 bg-slate-100 px-2 py-1 rounded border border-slate-200">{c.behaviorPattern}</span>
-                                </td>
-                            </tr>
-                        ))}
-                    </tbody>
-                </table>
-            </div>
-       </Card>
-    </div>
-  );
-
-  const SupplierInsightsView = () => (
+    return (
       <div className="space-y-6 animate-enter">
         <SectionHeader 
              title="Supplier Performance" 
@@ -883,6 +1118,36 @@ function App() {
                 </div>
             ))}
         </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+             <Card title="Volume Dependency (Grams)" delay={300} className="min-h-[350px]">
+                <ResponsiveContainer width="100%" height={300}>
+                     <PieChart>
+                         <Pie data={volumeData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                             {volumeData.map((entry, index) => (
+                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                             ))}
+                         </Pie>
+                         <Tooltip formatter={(val:number) => formatGrams(val)} contentStyle={{borderRadius: '8px'}} />
+                         <Legend verticalAlign="bottom" height={36}/>
+                     </PieChart>
+                 </ResponsiveContainer>
+             </Card>
+             <Card title="Capital Allocation (Cost)" delay={400} className="min-h-[350px]">
+                <ResponsiveContainer width="100%" height={300}>
+                     <PieChart>
+                         <Pie data={valueData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
+                             {valueData.map((entry, index) => (
+                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
+                             ))}
+                         </Pie>
+                         <Tooltip formatter={(val:number) => formatCurrency(val)} contentStyle={{borderRadius: '8px'}} />
+                         <Legend verticalAlign="bottom" height={36}/>
+                     </PieChart>
+                 </ResponsiveContainer>
+             </Card>
+        </div>
+
         <Card title="Procurement History">
             {/* Reusing the table from Price Analysis mostly, but focused on stats */}
              <table className="w-full text-sm text-left">
@@ -911,7 +1176,8 @@ function App() {
              </table>
         </Card>
       </div>
-  );
+    );
+  };
 
   const BusinessLedgerView = () => {
       // Calculate monthly ledger
@@ -1012,13 +1278,38 @@ function App() {
       );
   };
 
-  const renderDateFilter = () => (
-      <DateRangePicker startDate={dateRange.start} endDate={dateRange.end} onChange={(start, end) => setDateRange({ start, end })} />
-  );
-
   return (
     <Layout activeTab={activeTab} onTabChange={setActiveTab} searchQuery={searchQuery} onSearch={setSearchQuery}>
         <Toast toasts={toasts} removeToast={removeToast} />
+        
+        {/* Delete Modal */}
+        {showDeleteModal && (
+            <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-fade-in">
+                <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-slate-200 animate-slide-up">
+                    <div className="flex flex-col items-center text-center gap-3 mb-6">
+                        <div className="w-12 h-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center">
+                            <Lock className="w-6 h-6"/>
+                        </div>
+                        <div>
+                             <h3 className="text-lg font-bold text-slate-900">Secure Deletion</h3>
+                             <p className="text-xs text-slate-500 mt-1">Enter admin password to permanently delete this record.</p>
+                        </div>
+                    </div>
+                    <input 
+                        type="password" 
+                        placeholder="Admin Password" 
+                        value={deletePassword}
+                        onChange={(e) => setDeletePassword(e.target.value)}
+                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-center mb-4 focus:ring-2 focus:ring-red-500/20 focus:border-red-500 outline-none"
+                    />
+                    <div className="flex gap-3">
+                        <button onClick={() => { setShowDeleteModal(false); setDeletePassword(''); }} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors text-sm">Cancel</button>
+                        <button onClick={confirmDelete} className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20 text-sm">Delete Record</button>
+                    </div>
+                </div>
+            </div>
+        )}
+
         <div className="min-h-full pb-10">
             {activeTab === 'dashboard' && <DashboardView />}
             {activeTab === 'invoices' && <InvoicesView />}
