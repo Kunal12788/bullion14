@@ -75,7 +75,7 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
 
       try {
           const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
-          let contents = [];
+          let parts = [];
 
           // Schema definition for structured output
           const responseSchema = {
@@ -94,10 +94,17 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
           if (selectedFile) {
               // Multimodal Request (PDF/Image)
               const base64Data = await fileToBase64(selectedFile);
-              contents = [
+              
+              // Determine mime type reliably
+              let mimeType = selectedFile.type;
+              if (!mimeType && selectedFile.name.toLowerCase().endsWith('.pdf')) {
+                  mimeType = 'application/pdf';
+              }
+
+              parts = [
                   {
                       inlineData: {
-                          mimeType: selectedFile.type,
+                          mimeType: mimeType || 'application/pdf', 
                           data: base64Data
                       }
                   },
@@ -107,7 +114,7 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
               ];
           } else {
               // Text-only Request
-              contents = [
+              parts = [
                   {
                       text: `Extract invoice details from this text. Purchase or Sale? Party Name? Date? Total Grams? Rate? GST Rate? Text: ${ocrText}`
                   }
@@ -115,15 +122,17 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
           }
 
           const response = await ai.models.generateContent({
-            model: 'gemini-2.0-flash-exp', // Using Flash 2.0 for efficient document understanding
-            contents: contents,
+            model: 'gemini-2.0-flash', 
+            contents: { parts: parts },
             config: {
                 responseMimeType: "application/json",
                 responseSchema: responseSchema
             }
           });
 
-          const data = JSON.parse(response.text || "{}");
+          // Clean response text (remove markdown code blocks if present)
+          const cleanText = response.text ? response.text.replace(/```json|```/g, '').trim() : "{}";
+          const data = JSON.parse(cleanText);
           
           if (data && (data.partyName || data.quantityGrams)) {
                setFormData({
@@ -140,7 +149,7 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
           }
           throw new Error("Could not extract valid data");
 
-      } catch (err) {
+      } catch (err: any) {
           console.error(err);
           // Fallback for text-only legacy parser if Gemini fails (only works for text input)
           if (!selectedFile && ocrText) {
@@ -160,7 +169,7 @@ const InvoiceForm: React.FC<InvoiceFormProps> = ({ onAdd, currentStock, lockDate
                   setError('Auto-extraction failed. Please enter details manually.');
               }
           } else {
-              setError('Could not process the document. Please try again or enter manually.');
+              setError(`Processing failed: ${err.message || "Unknown error"}. Try manual entry.`);
           }
       } finally { 
           setIsProcessing(false); 
