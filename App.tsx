@@ -155,7 +155,8 @@ function App() {
 
           if (inv.type === 'SALE') {
               customerStats[inv.partyName].totalGrams += inv.quantityGrams;
-              customerStats[inv.partyName].totalSpend += inv.totalAmount;
+              // Using taxableAmount (Ex-GST) for total spend analysis as requested
+              customerStats[inv.partyName].totalSpend += inv.taxableAmount; 
               customerStats[inv.partyName].profitContribution += (inv.profit || 0);
 
               totalRevenueExTax += (inv.quantityGrams * inv.ratePerGram);
@@ -342,7 +343,7 @@ function App() {
 
   const handleCustomerExport = (type: 'CSV' | 'PDF') => {
        if (type === 'CSV') {
-           const headers = ['Customer', 'Frequency', 'Total Grams', 'Total Spend', 'Avg Price', 'Avg Profit/g', 'Pattern'];
+           const headers = ['Customer', 'Frequency', 'Total Grams', 'Revenue (Ex GST)', 'Avg Price', 'Avg Profit/g', 'Pattern'];
            const csv = [
                headers.join(','),
                ...customerData.map(c => [
@@ -353,7 +354,7 @@ function App() {
            addToast('SUCCESS', 'Customer Data CSV downloaded.');
        } else {
            generatePDF('Customer Intelligence Report', 
-             [['Customer', 'Freq', 'Total Grams', 'Spend', 'Avg Price', 'Profit/g', 'Pattern']],
+             [['Customer', 'Freq', 'Total Grams', 'Revenue (Ex GST)', 'Avg Price', 'Profit/g', 'Pattern']],
              customerData.map(c => [c.name, c.txCount, formatGrams(c.totalGrams), formatCurrency(c.totalSpend), formatCurrency(c.avgSellingPrice || 0), formatCurrency(c.avgProfitPerGram || 0), c.behaviorPattern || ''])
            );
        }
@@ -380,7 +381,7 @@ function App() {
 
   const handleLedgerExport = (type: 'CSV' | 'PDF', monthlyData: any[], totals: any) => {
       if (type === 'CSV') {
-          const headers = ['Month', 'Turnover', 'Profit', 'Margin %', 'Qty Sold'];
+          const headers = ['Month', 'Turnover (Ex GST)', 'Profit', 'Margin %', 'Qty Sold'];
           const csv = [
               headers.join(','),
               ...monthlyData.map(m => [
@@ -391,10 +392,10 @@ function App() {
           addToast('SUCCESS', 'Ledger CSV downloaded.');
       } else {
           generatePDF('Business Performance Ledger', 
-            [['Month', 'Turnover', 'Profit', 'Margin %', 'Qty Sold']],
+            [['Month', 'Turnover (Ex GST)', 'Profit', 'Margin %', 'Qty Sold']],
             monthlyData.map(m => [m.date.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'}), formatCurrency(m.turnover), formatCurrency(m.profit), (m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2) + '%', formatGrams(m.qty)]),
             [
-                `Total Turnover: ${formatCurrency(totals.turnover)}`,
+                `Total Turnover (Ex GST): ${formatCurrency(totals.turnover)}`,
                 `Total Profit: ${formatCurrency(totals.profit)}`,
                 `Overall Margin: ${totals.margin.toFixed(2)}%`,
                 `Total Gold Sold: ${formatGrams(totals.qty)}`
@@ -407,27 +408,36 @@ function App() {
        const data = [...filteredInvoices].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
        
        if (type === 'CSV') {
-           const headers = ['Date', 'Type', 'Party', 'Qty (g)', 'Rate (INR/g)', 'Taxable (INR)', 'GST (INR)', 'Total (INR)', 'Profit (INR)'];
+           const headers = ['Date', 'Type', 'Party', 'Qty (g)', 'Rate (INR/g)', 'My Cost (INR/g)', 'Taxable (Ex GST)', 'GST (INR)', 'Total (Inc GST)', 'Profit (Ex GST)'];
            const csv = [
                headers.join(','),
-               ...data.map(i => [
-                   i.date, i.type, `"${i.partyName}"`, i.quantityGrams, i.ratePerGram, i.taxableAmount, i.gstAmount, i.totalAmount, i.profit || 0
-               ].join(','))
+               ...data.map(i => {
+                   const myCost = i.type === 'SALE' && i.cogs ? (i.cogs / i.quantityGrams) : 0;
+                   return [
+                       i.date, i.type, `"${i.partyName}"`, i.quantityGrams, i.ratePerGram, myCost > 0 ? myCost.toFixed(2) : '-', i.taxableAmount, i.gstAmount, i.totalAmount, i.profit || 0
+                   ].join(',')
+               })
            ].join('\n');
            downloadCSV(csv, `transactions_${dateRange.start}_${dateRange.end}.csv`);
            addToast('SUCCESS', 'Transactions CSV downloaded.');
        } else {
            generatePDF('Transaction Report', 
-             [['Date', 'Type', 'Party', 'Qty', 'Rate', 'Total', 'Profit']],
-             data.map(i => [
-                 i.date, 
-                 i.type.substring(0,1), 
-                 i.partyName, 
-                 formatGrams(i.quantityGrams), 
-                 formatCurrency(i.ratePerGram), 
-                 formatCurrency(i.totalAmount), 
-                 i.profit ? formatCurrency(i.profit) : '-'
-             ])
+             [['Date', 'Type', 'Party', 'Qty', 'Rate', 'My Cost', 'Taxable', 'GST', 'Total', 'Profit']],
+             data.map(i => {
+                 const myCost = i.type === 'SALE' && i.cogs ? (i.cogs / i.quantityGrams) : 0;
+                 return [
+                     i.date, 
+                     i.type.substring(0,1), 
+                     i.partyName, 
+                     formatGrams(i.quantityGrams), 
+                     formatCurrency(i.ratePerGram),
+                     myCost > 0 ? formatCurrency(myCost) : '-',
+                     formatCurrency(i.taxableAmount), 
+                     formatCurrency(i.gstAmount), 
+                     formatCurrency(i.totalAmount), 
+                     i.profit ? formatCurrency(i.profit) : '-'
+                 ]
+             })
            );
        }
   };
@@ -529,7 +539,7 @@ function App() {
                                   <th className="px-4 py-3">Supplier</th>
                                   <th className="px-4 py-3 text-right">Qty (g)</th>
                                   <th className="px-4 py-3 text-right">Purchase Rate (₹/g)</th>
-                                  <th className="px-4 py-3 text-right">Total (ex-tax)</th>
+                                  <th className="px-4 py-3 text-right">Taxable (Ex-Tax)</th>
                               </tr>
                           </thead>
                           <tbody>
@@ -540,7 +550,7 @@ function App() {
                                       <td className="px-4 py-3 font-medium">{inv.partyName}</td>
                                       <td className="px-4 py-3 text-right font-mono">{formatGrams(inv.quantityGrams)}</td>
                                       <td className="px-4 py-3 text-right font-mono text-blue-600">{formatCurrency(inv.ratePerGram)}</td>
-                                      <td className="px-4 py-3 text-right font-mono">{formatCurrency(inv.quantityGrams * inv.ratePerGram)}</td>
+                                      <td className="px-4 py-3 text-right font-mono">{formatCurrency(inv.taxableAmount)}</td>
                                   </tr>
                               ))}
                           </tbody>
@@ -682,16 +692,17 @@ function App() {
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Type</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Party</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Qty</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Cust. Cost/g</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Rate/g</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Cost/g</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Cust)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Me)</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Taxable (Ex GST)</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">GST</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Inc)</th>
                                   <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Profit</th>
                               </tr>
                           </thead>
                           <tbody>
                               {filteredInvoices.length === 0 ? (
-                                  <tr><td colSpan={9} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
+                                  <tr><td colSpan={10} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
                               ) : (
                                   filteredInvoices.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((inv, i) => {
                                       const myCostPerGram = inv.type === 'SALE' && inv.cogs ? inv.cogs / inv.quantityGrams : null;
@@ -704,9 +715,12 @@ function App() {
                                           <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-medium text-slate-900 truncate max-w-[150px]">{inv.partyName}</td>
                                           <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-600 text-right">{formatGrams(inv.quantityGrams)}</td>
                                           <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">{formatCurrency(inv.ratePerGram).replace('.00','')}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-400 text-right">{myCostPerGram ? formatCurrency(myCostPerGram).replace('.00','') : '-'}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-medium text-slate-900 text-right">{formatCurrency(inv.totalAmount)}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">{inv.cogs ? formatCurrency(inv.cogs) : '-'}</td>
+                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">
+                                              {myCostPerGram ? formatCurrency(myCostPerGram).replace('.00','') : '-'}
+                                          </td>
+                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-medium text-slate-900 text-right">{formatCurrency(inv.taxableAmount)}</td>
+                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">{formatCurrency(inv.gstAmount)}</td>
+                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-400 text-right">{formatCurrency(inv.totalAmount)}</td>
                                           <td className={`px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-r border-transparent group-hover:border-slate-100 font-mono font-bold text-right rounded-r-xl ${inv.profit && inv.profit > 0 ? 'text-green-600' : 'text-slate-300'}`}>
                                               {inv.type === 'SALE' ? formatCurrency(inv.profit || 0) : '-'}
                                           </td>
@@ -725,9 +739,9 @@ function App() {
     <div className="space-y-6 animate-enter">
        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
           <StatsCard title="Current Stock" value={formatGrams(currentStock)} subValue="On Hand" icon={Scale} isActive delayIndex={0} />
-          <StatsCard title="Inventory Value" value={formatCurrency(fifoValue)} subValue="FIFO Basis" icon={Coins} delayIndex={1} />
-          <StatsCard title="Net Profit" value={formatCurrency(totalProfit)} subValue="Realized (Selected Period)" icon={TrendingUp} delayIndex={2} />
-           <StatsCard title="Profit Margin" value={`${profitMargin.toFixed(2)}%`} subValue="Avg. Margin" icon={Percent} delayIndex={3} />
+          <StatsCard title="Inventory Value" value={formatCurrency(fifoValue)} subValue="FIFO (Ex GST)" icon={Coins} delayIndex={1} />
+          <StatsCard title="Net Profit" value={formatCurrency(totalProfit)} subValue="Realized (Ex GST)" icon={TrendingUp} delayIndex={2} />
+           <StatsCard title="Profit Margin" value={`${profitMargin.toFixed(2)}%`} subValue="Avg. Margin (Ex Tax)" icon={Percent} delayIndex={3} />
        </div>
 
        {alerts.length > 0 && (
@@ -808,7 +822,7 @@ function App() {
                             <th className="px-4 py-3">Customer Name</th>
                             <th className="px-4 py-3 text-center">Tx Count</th>
                             <th className="px-4 py-3 text-right">Total Grams</th>
-                            <th className="px-4 py-3 text-right">Total Spend</th>
+                            <th className="px-4 py-3 text-right">Revenue (Ex Tax)</th>
                             <th className="px-4 py-3 text-right">Profit Contrib.</th>
                             <th className="px-4 py-3 text-right">Margin %</th>
                             <th className="px-4 py-3">Behavior Tag</th>
@@ -912,12 +926,12 @@ function App() {
               const key = `${d.getFullYear()}-${d.getMonth()}`; // YYYY-M
               if (!stats[key]) stats[key] = { turnover: 0, profit: 0, tax: 0, qty: 0 };
               
-              stats[key].turnover += inv.totalAmount;
+              stats[key].turnover += inv.taxableAmount; // Changed to Taxable Amount (Ex-GST)
               stats[key].profit += (inv.profit || 0);
               stats[key].tax += inv.gstAmount;
               stats[key].qty += inv.quantityGrams;
 
-              totalTurnover += inv.totalAmount;
+              totalTurnover += inv.taxableAmount; // Changed to Taxable Amount (Ex-GST)
               totalProfit += (inv.profit || 0);
               totalQty += inv.quantityGrams;
           });
@@ -946,7 +960,7 @@ function App() {
 
               <div className="bg-slate-900 rounded-2xl p-8 text-white flex flex-col md:flex-row justify-between items-center shadow-2xl shadow-slate-900/20 mb-6">
                   <div className="text-center md:text-left mb-6 md:mb-0">
-                      <p className="text-slate-400 font-bold uppercase tracking-widest text-xs mb-2">Lifetime Turnover</p>
+                      <p className="text-slate-400 font-bold uppercase tracking-widest text-xs mb-2">Lifetime Turnover (Ex GST)</p>
                       <h2 className="text-4xl md:text-5xl font-mono font-bold text-white mb-1">{formatCurrency(totals.turnover)}</h2>
                       <p className="text-gold-400 font-medium">Net Profit: {formatCurrency(totals.profit)} ({totals.margin.toFixed(2)}%)</p>
                   </div>
@@ -968,7 +982,7 @@ function App() {
                           <thead className="text-slate-500 bg-slate-50/50">
                               <tr>
                                   <th className="px-4 py-3">Month</th>
-                                  <th className="px-4 py-3 text-right">Turnover (Inc. GST)</th>
+                                  <th className="px-4 py-3 text-right">Turnover (Ex GST)</th>
                                   <th className="px-4 py-3 text-right">GST Collected</th>
                                   <th className="px-4 py-3 text-right">Net Profit</th>
                                   <th className="px-4 py-3 text-right">Margin %</th>
