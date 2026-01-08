@@ -9,7 +9,7 @@ import { SingleDatePicker } from './components/SingleDatePicker';
 import Toast, { ToastMessage } from './components/Toast'; 
 import { Invoice, InventoryBatch, CustomerStat, AgingStats, SupplierStat, RiskAlert } from './types';
 import { loadInvoices, loadInventory, saveInvoices, saveInventory, resetData } from './services/storeService';
-import { formatCurrency, formatGrams, calculateInventoryValueOnDate, getDateDaysAgo, calculateStockAging, calculateSupplierStats, calculateTurnoverStats, generateId, downloadCSV } from './utils';
+import { formatCurrency, formatGrams, calculateInventoryValueOnDate, getDateDaysAgo, calculateStockAging, calculateSupplierStats, calculateTurnoverStats, generateId, downloadCSV, downloadJSON } from './utils';
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
 import { 
@@ -17,7 +17,7 @@ import {
   History, Percent, Award, Calendar, FileSpreadsheet, FileText, Info,
   AlertOctagon, BadgeAlert, TrendingDown, Hourglass, Factory, Lock, Search, Filter,
   ArrowRightLeft, LineChart, CandlestickChart, Download, Users, ChevronRight, Crown, Briefcase, ChevronUp, ChevronDown,
-  Timer, PieChart as PieIcon, BarChart3, Activity, Wallet, FileDown
+  Timer, PieChart as PieIcon, BarChart3, Activity, Wallet, FileDown, CheckSquare, X, UploadCloud, Settings, Save, HardDrive
 } from 'lucide-react';
 import { 
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
@@ -62,6 +62,65 @@ const ExportMenu: React.FC<{ onExport: (type: 'CSV' | 'PDF') => void }> = ({ onE
     </div>
 );
 
+const SettingsView: React.FC<{ onBackup: () => void; onRestore: (e: any) => void; onReset: () => void }> = ({ onBackup, onRestore, onReset }) => (
+    <div className="space-y-6 animate-slide-up">
+        <SectionHeader title="Data Management" subtitle="Backup, restore, or reset your secure local ledger." />
+        
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <Card title="Backup Database">
+                <div className="flex flex-col items-center text-center p-4">
+                    <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-full flex items-center justify-center mb-4">
+                        <Download className="w-8 h-8" />
+                    </div>
+                    <h3 className="font-bold text-slate-900 mb-2">Export to File</h3>
+                    <p className="text-sm text-slate-500 mb-6">Download a secure JSON copy of your entire inventory and transaction history.</p>
+                    <button onClick={onBackup} className="w-full py-3 bg-blue-600 hover:bg-blue-700 text-white font-bold rounded-xl transition-colors flex items-center justify-center gap-2">
+                        <FileDown className="w-4 h-4" /> Download Backup
+                    </button>
+                </div>
+            </Card>
+
+            <Card title="Restore Database">
+                <div className="flex flex-col items-center text-center p-4">
+                    <div className="w-16 h-16 bg-gold-50 text-gold-600 rounded-full flex items-center justify-center mb-4">
+                        <UploadCloud className="w-8 h-8" />
+                    </div>
+                    <h3 className="font-bold text-slate-900 mb-2">Import from File</h3>
+                    <p className="text-sm text-slate-500 mb-6">Restore your data from a previous backup. This will replace current data.</p>
+                    <label className="w-full py-3 bg-white border-2 border-slate-200 hover:border-gold-500 hover:text-gold-600 text-slate-600 font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2">
+                        <HardDrive className="w-4 h-4" /> Select Backup File
+                        <input type="file" accept=".json" onChange={onRestore} className="hidden" />
+                    </label>
+                </div>
+            </Card>
+
+             <Card title="Danger Zone">
+                <div className="flex flex-col items-center text-center p-4">
+                    <div className="w-16 h-16 bg-red-50 text-red-600 rounded-full flex items-center justify-center mb-4">
+                        <Trash2 className="w-8 h-8" />
+                    </div>
+                    <h3 className="font-bold text-slate-900 mb-2">System Reset</h3>
+                    <p className="text-sm text-slate-500 mb-6">Permanently delete all local data and start fresh. Cannot be undone.</p>
+                    <button onClick={onReset} className="w-full py-3 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-100 font-bold rounded-xl transition-colors flex items-center justify-center gap-2">
+                        <AlertTriangle className="w-4 h-4" /> Factory Reset
+                    </button>
+                </div>
+            </Card>
+        </div>
+        
+        <div className="bg-slate-900 rounded-2xl p-6 flex items-start gap-4">
+            <Info className="w-6 h-6 text-gold-500 flex-shrink-0 mt-1" />
+            <div>
+                <h4 className="text-white font-bold text-lg mb-1">About Data Privacy</h4>
+                <p className="text-slate-400 text-sm leading-relaxed">
+                    BullionKeep AI runs entirely in your browser. Your financial data is stored locally on this device and is never sent to a central server. 
+                    To access your data on another device, use the <strong>Backup</strong> button to save a file, and then <strong>Restore</strong> it on the new device.
+                </p>
+            </div>
+        </div>
+    </div>
+);
+
 function App() {
   const [activeTab, setActiveTab] = useState('dashboard');
   const [invoices, setInvoices] = useState<Invoice[]>([]);
@@ -72,6 +131,7 @@ function App() {
   
   // Delete Modal State
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [pendingDeleteIds, setPendingDeleteIds] = useState<string[]>([]);
   const [deletePassword, setDeletePassword] = useState('');
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   
@@ -292,22 +352,38 @@ function App() {
 
   const initiateDelete = (id: string) => {
       setDeleteId(id);
+      setPendingDeleteIds([]);
+      setDeletePassword('');
+      setShowDeleteModal(true);
+  };
+  
+  const initiateBulkDelete = (ids: string[]) => {
+      setPendingDeleteIds(ids);
+      setDeleteId(null);
       setDeletePassword('');
       setShowDeleteModal(true);
   };
 
   const confirmDelete = () => {
       if (deletePassword === 'QAZ@789') {
+          let remainingInvoices = invoices;
+          
           if (deleteId) {
-              const remainingInvoices = invoices.filter(i => i.id !== deleteId);
+             remainingInvoices = invoices.filter(i => i.id !== deleteId);
+          } else if (pendingDeleteIds.length > 0) {
+             remainingInvoices = invoices.filter(i => !pendingDeleteIds.includes(i.id));
+          }
+
+          if (deleteId || pendingDeleteIds.length > 0) {
               const { updatedInvoices, updatedInventory } = recalculateAllData(remainingInvoices);
-              
               setInvoices(updatedInvoices);
               setInventory(updatedInventory);
-              addToast('SUCCESS', 'Record deleted and data recalculated.');
+              addToast('SUCCESS', deleteId ? 'Record deleted.' : `${pendingDeleteIds.length} Records deleted.`);
           }
+          
           setShowDeleteModal(false);
           setDeleteId(null);
+          setPendingDeleteIds([]);
           setDeletePassword('');
       } else {
           addToast('ERROR', 'Incorrect Admin Password.');
@@ -361,11 +437,57 @@ function App() {
         addToast('SUCCESS', 'Sale recorded. FIFO Logic Applied.');
     }
   };
+  
+  // --- BACKUP & RESTORE LOGIC ---
+  
+  const handleBackup = () => {
+      const backupData = {
+          invoices,
+          inventory,
+          timestamp: new Date().toISOString(),
+          app: "BullionKeepAI"
+      };
+      downloadJSON(backupData, `bullionkeep_backup_${new Date().toISOString().split('T')[0]}.json`);
+      addToast('SUCCESS', 'Backup file downloaded successfully.');
+  };
+
+  const handleRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      
+      const reader = new FileReader();
+      reader.onload = (event) => {
+          try {
+              const data = JSON.parse(event.target?.result as string);
+              
+              if (data.app !== "BullionKeepAI") {
+                   if(!window.confirm("This file format looks different. Try importing anyway?")) return;
+              }
+
+              if (Array.isArray(data.invoices) && Array.isArray(data.inventory)) {
+                  // Basic validation passed
+                  setInvoices(data.invoices);
+                  setInventory(data.inventory);
+                  addToast('SUCCESS', 'Database restored successfully.');
+                  // Also force re-save to local storage immediately just in case
+                  saveInvoices(data.invoices);
+                  saveInventory(data.inventory);
+              } else {
+                  addToast('ERROR', 'Invalid backup file structure.');
+              }
+          } catch (err) {
+              console.error(err);
+              addToast('ERROR', 'Failed to parse backup file.');
+          }
+      };
+      reader.readAsText(file);
+      e.target.value = ''; // Reset input to allow re-selection
+  };
 
   const handleReset = () => {
-      if(window.confirm("Are you sure? This will delete all data. This action cannot be undone.")) {
+      if(window.confirm("CRITICAL WARNING: This will permanently delete ALL data on this device. There is no undo. Are you absolutely sure?")) {
           resetData(); setInvoices([]); setInventory([]);
-          addToast('SUCCESS', 'System Reset Complete');
+          addToast('SUCCESS', 'System Reset Complete. All data wiped.');
       }
   }
 
@@ -501,8 +623,9 @@ function App() {
       }
   };
 
-  const handleInvoicesExport = (type: 'CSV' | 'PDF') => {
-       const data = [...filteredInvoices].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
+  const handleInvoicesExport = (type: 'CSV' | 'PDF', selectedOnly: Invoice[] | null = null) => {
+       const source = selectedOnly || filteredInvoices;
+       const data = [...source].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
        
        if (type === 'CSV') {
            const headers = ['Date', 'Type', 'Party', 'Qty (g)', 'Rate (INR/g)', 'My Cost (INR/g)', 'Taxable (Ex GST)', 'GST (INR)', 'Total (Inc GST)', 'My Total Cost (Ex GST)', 'Profit (Ex GST)'];
@@ -516,7 +639,7 @@ function App() {
                    ].join(',')
                })
            ].join('\n');
-           downloadCSV(csv, `transactions_${dateRange.start}_${dateRange.end}.csv`);
+           downloadCSV(csv, `transactions_export_${new Date().toISOString().split('T')[0]}.csv`);
            addToast('SUCCESS', 'Transactions CSV downloaded.');
        } else {
            generatePDF('Transaction Report', 
@@ -666,7 +789,160 @@ function App() {
       );
   };
 
+  const InvoicesView = () => {
+      const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+
+      // Update selections when global invoices change (e.g. deletion)
+      useEffect(() => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            for(const id of next) {
+                if(!invoices.find(i => i.id === id)) next.delete(id);
+            }
+            return next;
+        });
+      }, [invoices]);
+
+      const handleSelectAll = () => {
+        if (selectedIds.size === filteredInvoices.length && filteredInvoices.length > 0) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(filteredInvoices.map(i => i.id)));
+        }
+      };
+
+      const handleSelectRow = (id: string) => {
+        const newSet = new Set(selectedIds);
+        if (newSet.has(id)) newSet.delete(id);
+        else newSet.add(id);
+        setSelectedIds(newSet);
+      };
+
+      const executeBulkExport = (type: 'CSV' | 'PDF') => {
+          const selectedInvoices = invoices.filter(i => selectedIds.has(i.id));
+          handleInvoicesExport(type, selectedInvoices);
+      };
+      
+      const executeBulkDelete = () => {
+          initiateBulkDelete(Array.from(selectedIds));
+      };
+
+      const isAllSelected = filteredInvoices.length > 0 && selectedIds.size === filteredInvoices.length;
+
+      return (
+      <div className="flex flex-col lg:flex-row gap-6 relative items-start h-full">
+          <div className="w-full lg:w-[380px] xl:w-[420px] flex-shrink-0 lg:sticky lg:top-0 transition-all">
+              <InvoiceForm onAdd={handleAddInvoice} currentStock={currentStock} lockDate={lockDate} />
+          </div>
+          <div className="flex-1 w-full min-w-0">
+              <Card title="Recent Transactions" className="min-h-[600px] h-full flex flex-col relative" delay={200}
+                 action={
+                     <div className="flex gap-2 items-center">
+                        <ExportMenu onExport={handleInvoicesExport} />
+                        {renderDateFilter()}
+                     </div>
+                 }
+              >
+                  <div className="overflow-auto flex-1 -mx-6 px-6 pb-20 relative [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-300 transition-colors">
+                      <table className="w-full text-sm text-left border-separate border-spacing-y-2 min-w-[1000px]">
+                          <thead className="text-slate-400 sticky top-0 bg-white/95 backdrop-blur z-10">
+                              <tr>
+                                  <th className="px-4 py-3 border-b border-slate-50 w-10">
+                                      <button onClick={handleSelectAll} className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${isAllSelected ? 'bg-gold-500 border-gold-500 text-white' : 'border-slate-300 hover:border-gold-500'}`}>
+                                          {isAllSelected && <CheckSquare className="w-3 h-3" />}
+                                      </button>
+                                  </th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Date</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Type</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Party</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Qty</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Rate/g</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Cost/g</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Taxable (Ex GST)</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">GST</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Inc)</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Total Cost (Ex GST)</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Profit</th>
+                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-center">Action</th>
+                              </tr>
+                          </thead>
+                          <tbody>
+                              {filteredInvoices.length === 0 ? (
+                                  <tr><td colSpan={13} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
+                              ) : (
+                                  filteredInvoices.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((inv, i) => {
+                                      const myCostPerGram = inv.type === 'SALE' && inv.cogs ? inv.cogs / inv.quantityGrams : null;
+                                      const isSelected = selectedIds.has(inv.id);
+                                      return (
+                                      <tr key={inv.id} className={`group transition-transform duration-200 ${isSelected ? 'bg-gold-50/30' : 'hover:scale-[1.01]'}`}>
+                                          <td className={`px-4 py-3 border-y border-l border-transparent rounded-l-xl ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
+                                              <button onClick={() => handleSelectRow(inv.id)} className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-gold-500 border-gold-500 text-white' : 'border-slate-300 hover:border-gold-500 bg-white'}`}>
+                                                  {isSelected && <CheckSquare className="w-3 h-3" />}
+                                              </button>
+                                          </td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-xs text-slate-500 ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{inv.date}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
+                                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide border ${inv.type === 'PURCHASE' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-green-50 text-green-600 border-green-100'}`}>{inv.type === 'PURCHASE' ? 'In' : 'Out'}</span>
+                                          </td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-medium text-slate-900 truncate max-w-[150px] ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{inv.partyName}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-600 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatGrams(inv.quantityGrams)}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-500 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.ratePerGram).replace('.00','')}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-500 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
+                                              {myCostPerGram ? formatCurrency(myCostPerGram).replace('.00','') : '-'}
+                                          </td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono font-medium text-slate-900 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.taxableAmount)}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-500 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.gstAmount)}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-400 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.totalAmount)}</td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono font-medium text-slate-700 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
+                                              {formatCurrency(inv.type === 'SALE' ? (inv.cogs || 0) : inv.taxableAmount)}
+                                          </td>
+                                          <td className={`px-4 py-3 border-y border-transparent font-mono font-bold text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'} ${(inv.profit || 0) > 0 ? 'text-green-600' : (inv.profit || 0) < 0 ? 'text-red-600' : 'text-slate-300'}`}>
+                                              {inv.type === 'SALE' ? formatCurrency(inv.profit || 0) : '-'}
+                                          </td>
+                                          <td className={`px-4 py-3 border-y border-r border-transparent rounded-r-xl text-center ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
+                                              <button onClick={() => initiateDelete(inv.id)} className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors">
+                                                  <Trash2 className="w-4 h-4"/>
+                                              </button>
+                                          </td>
+                                      </tr>
+                                  )})
+                              )}
+                          </tbody>
+                      </table>
+                  </div>
+
+                  {/* Bulk Action Bar */}
+                  {selectedIds.size > 0 && (
+                      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-xl shadow-2xl flex items-center gap-4 px-6 py-3 animate-slide-up z-20">
+                          <div className="flex items-center gap-3 pr-4 border-r border-slate-700">
+                              <span className="bg-gold-500 text-xs font-bold px-2 py-0.5 rounded text-white">{selectedIds.size}</span>
+                              <span className="text-sm font-medium">Selected</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                              <button onClick={() => executeBulkExport('CSV')} className="p-2 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors" title="Export CSV">
+                                  <FileSpreadsheet className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => executeBulkExport('PDF')} className="p-2 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors" title="Export PDF">
+                                  <FileText className="w-4 h-4" />
+                              </button>
+                              <div className="w-px h-4 bg-slate-700 mx-1"></div>
+                              <button onClick={executeBulkDelete} className="p-2 hover:bg-red-900/50 text-red-400 hover:text-red-300 rounded-lg transition-colors flex items-center gap-2">
+                                  <Trash2 className="w-4 h-4" />
+                                  <span className="text-xs font-bold">Delete</span>
+                              </button>
+                          </div>
+                          <button onClick={() => setSelectedIds(new Set())} className="ml-2 p-1 hover:bg-slate-800 rounded-full text-slate-500 hover:text-white">
+                              <X className="w-4 h-4" />
+                          </button>
+                      </div>
+                  )}
+              </Card>
+          </div>
+      </div>
+  )};
+
   const CustomerInsightsView = () => {
+       // ... existing CustomerInsightsView code
        const COLORS = ['#d19726', '#e4c76d', '#b4761e', '#f5eccb', '#90561a', '#94a3b8'];
        const pieData = customerData.slice(0, 5).map(c => ({ name: c.name, value: c.totalGrams }));
        const others = customerData.slice(5).reduce((acc, c) => acc + c.totalGrams, 0);
@@ -763,6 +1039,7 @@ function App() {
   };
 
   const PriceAnalysisView = () => {
+      // ... existing PriceAnalysisView code
       const priceMetrics = useMemo(() => {
           const purchases = filteredInvoices.filter(i => i.type === 'PURCHASE');
           const sales = filteredInvoices.filter(i => i.type === 'SALE');
@@ -880,6 +1157,7 @@ function App() {
   };
 
   const AnalyticsView = () => {
+      // ... existing AnalyticsView code
       const realizedProfit = totalProfit; // FIFO profit from closed sales
       const rate = parseFloat(marketRate);
       const hasRate = !isNaN(rate) && rate > 0;
@@ -988,83 +1266,8 @@ function App() {
       </div>
   )};
 
-  const InvoicesView = () => (
-      <div className="flex flex-col lg:flex-row gap-6 relative items-start h-full">
-          <div className="w-full lg:w-[380px] xl:w-[420px] flex-shrink-0 lg:sticky lg:top-0 transition-all">
-              <InvoiceForm onAdd={handleAddInvoice} currentStock={currentStock} lockDate={lockDate} />
-          </div>
-          <div className="flex-1 w-full min-w-0">
-              <Card title="Recent Transactions" className="min-h-[600px] h-full flex flex-col" delay={200}
-                 action={
-                     <div className="flex gap-2 items-center">
-                        <ExportMenu onExport={handleInvoicesExport} />
-                        {renderDateFilter()}
-                     </div>
-                 }
-              >
-                  <div className="overflow-auto flex-1 -mx-6 px-6 relative [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-300 transition-colors">
-                      <table className="w-full text-sm text-left border-separate border-spacing-y-2 min-w-[1000px]">
-                          <thead className="text-slate-400 sticky top-0 bg-white/95 backdrop-blur z-10">
-                              <tr>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Date</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Type</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Party</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Qty</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Rate/g</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Cost/g</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Taxable (Ex GST)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">GST</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Inc)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Total Cost (Ex GST)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Profit</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-center">Action</th>
-                              </tr>
-                          </thead>
-                          <tbody>
-                              {filteredInvoices.length === 0 ? (
-                                  <tr><td colSpan={12} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
-                              ) : (
-                                  filteredInvoices.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((inv, i) => {
-                                      const myCostPerGram = inv.type === 'SALE' && inv.cogs ? inv.cogs / inv.quantityGrams : null;
-                                      return (
-                                      <tr key={inv.id} className="group hover:scale-[1.01] transition-transform duration-200">
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-l border-transparent group-hover:border-slate-100 text-slate-500 font-mono text-xs rounded-l-xl">{inv.date}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100">
-                                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide border ${inv.type === 'PURCHASE' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-green-50 text-green-600 border-green-100'}`}>{inv.type === 'PURCHASE' ? 'In' : 'Out'}</span>
-                                          </td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-medium text-slate-900 truncate max-w-[150px]">{inv.partyName}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-600 text-right">{formatGrams(inv.quantityGrams)}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">{formatCurrency(inv.ratePerGram).replace('.00','')}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">
-                                              {myCostPerGram ? formatCurrency(myCostPerGram).replace('.00','') : '-'}
-                                          </td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-medium text-slate-900 text-right">{formatCurrency(inv.taxableAmount)}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-500 text-right">{formatCurrency(inv.gstAmount)}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono text-slate-400 text-right">{formatCurrency(inv.totalAmount)}</td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-medium text-slate-700 text-right">
-                                              {formatCurrency(inv.type === 'SALE' ? (inv.cogs || 0) : inv.taxableAmount)}
-                                          </td>
-                                          <td className={`px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-transparent group-hover:border-slate-100 font-mono font-bold text-right ${(inv.profit || 0) > 0 ? 'text-green-600' : (inv.profit || 0) < 0 ? 'text-red-600' : 'text-slate-300'}`}>
-                                              {inv.type === 'SALE' ? formatCurrency(inv.profit || 0) : '-'}
-                                          </td>
-                                          <td className="px-4 py-3 bg-slate-50/50 group-hover:bg-white border-y border-r border-transparent group-hover:border-slate-100 rounded-r-xl text-center">
-                                              <button onClick={() => initiateDelete(inv.id)} className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors">
-                                                  <Trash2 className="w-4 h-4"/>
-                                              </button>
-                                          </td>
-                                      </tr>
-                                  )})
-                              )}
-                          </tbody>
-                      </table>
-                  </div>
-              </Card>
-          </div>
-      </div>
-  );
-
   const SupplierInsightsView = () => {
-    // Prepare Chart Data
+    // ... existing SupplierInsightsView code
     const { volumeData, valueData } = useMemo(() => {
         const sortedByVol = [...supplierData].sort((a,b) => b.totalGramsPurchased - a.totalGramsPurchased);
         const sortedByVal = [...supplierData].sort((a,b) => (b.totalGramsPurchased * b.avgRate) - (a.totalGramsPurchased * a.avgRate));
@@ -1180,7 +1383,7 @@ function App() {
   };
 
   const BusinessLedgerView = () => {
-      // Calculate monthly ledger
+      // ... existing BusinessLedgerView code
       const { monthlyData, totals } = useMemo(() => {
           const stats: Record<string, { turnover: number, profit: number, tax: number, qty: number }> = {};
           let totalTurnover = 0;
@@ -1291,8 +1494,10 @@ function App() {
                             <Lock className="w-6 h-6"/>
                         </div>
                         <div>
-                             <h3 className="text-lg font-bold text-slate-900">Secure Deletion</h3>
-                             <p className="text-xs text-slate-500 mt-1">Enter admin password to permanently delete this record.</p>
+                             <h3 className="text-lg font-bold text-slate-900">
+                                 {pendingDeleteIds.length > 0 ? `Delete ${pendingDeleteIds.length} Items?` : 'Secure Deletion'}
+                             </h3>
+                             <p className="text-xs text-slate-500 mt-1">Enter admin password to permanently delete.</p>
                         </div>
                     </div>
                     <input 
@@ -1303,8 +1508,8 @@ function App() {
                         className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-center mb-4 focus:ring-2 focus:ring-red-500/20 focus:border-red-500 outline-none"
                     />
                     <div className="flex gap-3">
-                        <button onClick={() => { setShowDeleteModal(false); setDeletePassword(''); }} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors text-sm">Cancel</button>
-                        <button onClick={confirmDelete} className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20 text-sm">Delete Record</button>
+                        <button onClick={() => { setShowDeleteModal(false); setDeletePassword(''); setPendingDeleteIds([]); setDeleteId(null); }} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors text-sm">Cancel</button>
+                        <button onClick={confirmDelete} className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20 text-sm">Delete</button>
                     </div>
                 </div>
             </div>
@@ -1332,6 +1537,7 @@ function App() {
             {activeTab === 'customer-insights' && <CustomerInsightsView />}
             {activeTab === 'supplier-insights' && <SupplierInsightsView />}
             {activeTab === 'business-ledger' && <BusinessLedgerView />}
+            {activeTab === 'settings' && <SettingsView onBackup={handleBackup} onRestore={handleRestore} onReset={handleReset} />}
         </div>
     </Layout>
   );

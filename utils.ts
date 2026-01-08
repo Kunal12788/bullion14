@@ -38,6 +38,20 @@ export const downloadCSV = (csvContent: string, filename: string) => {
   }
 };
 
+export const downloadJSON = (data: object, filename: string) => {
+  const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+  const link = document.createElement('a');
+  if (link.download !== undefined) {
+    const url = URL.createObjectURL(blob);
+    link.setAttribute('href', url);
+    link.setAttribute('download', filename);
+    link.style.visibility = 'hidden';
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+};
+
 /**
  * Replays transactions up to a specific date to calculate the FIFO inventory value at that time.
  */

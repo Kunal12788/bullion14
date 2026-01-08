@@ -1,6 +1,6 @@
 
 import React from 'react';
-import { LayoutDashboard, FileText, Package, PieChart, ShieldCheck, LineChart, Users, Briefcase, Factory, Search } from 'lucide-react';
+import { LayoutDashboard, FileText, Package, PieChart, ShieldCheck, LineChart, Users, Briefcase, Factory, Search, Settings } from 'lucide-react';
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -20,6 +20,7 @@ const Layout: React.FC<LayoutProps> = ({ children, activeTab, onTabChange, searc
     { id: 'customer-insights', label: 'Customers', icon: Users },
     { id: 'supplier-insights', label: 'Suppliers', icon: Factory },
     { id: 'business-ledger', label: 'Ledger', icon: Briefcase },
+    { id: 'settings', label: 'Data & Settings', icon: Settings },
   ];
 
   const formatTitle = (id: string) => {
