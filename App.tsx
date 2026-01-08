@@ -8,7 +8,7 @@ import { DateRangePicker } from './components/DateRangePicker';
 import { SingleDatePicker } from './components/SingleDatePicker';
 import Toast, { ToastMessage } from './components/Toast'; 
 import { Invoice, InventoryBatch, CustomerStat, AgingStats, SupplierStat, RiskAlert } from './types';
-import { loadInvoices, loadInventory, saveInvoices, saveInventory, resetData } from './services/storeService';
+import { fetchData, saveData, resetData } from './services/storeService';
 import { formatCurrency, formatGrams, calculateInventoryValueOnDate, getDateDaysAgo, calculateStockAging, calculateSupplierStats, calculateTurnoverStats, generateId, downloadCSV, downloadJSON } from './utils';
 import { jsPDF } from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -17,7 +17,7 @@ import {
   History, Percent, Award, Calendar, FileSpreadsheet, FileText, Info,
   AlertOctagon, BadgeAlert, TrendingDown, Hourglass, Factory, Lock, Search, Filter,
   ArrowRightLeft, LineChart, CandlestickChart, Download, Users, ChevronRight, Crown, Briefcase, ChevronUp, ChevronDown,
-  Timer, PieChart as PieIcon, BarChart3, Activity, Wallet, FileDown, CheckSquare, X, UploadCloud, Settings, Save, HardDrive
+  Timer, PieChart as PieIcon, BarChart3, Activity, Wallet, FileDown, CheckSquare, X, UploadCloud, Settings, Save, HardDrive, Database, Loader2
 } from 'lucide-react';
 import { 
   BarChart, Bar, Cell, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer, 
@@ -64,7 +64,7 @@ const ExportMenu: React.FC<{ onExport: (type: 'CSV' | 'PDF') => void }> = ({ onE
 
 const SettingsView: React.FC<{ onBackup: () => void; onRestore: (e: any) => void; onReset: () => void }> = ({ onBackup, onRestore, onReset }) => (
     <div className="space-y-6 animate-slide-up">
-        <SectionHeader title="Data Management" subtitle="Backup, restore, or reset your secure local ledger." />
+        <SectionHeader title="Data Management" subtitle="Backup, restore, or reset your secure cloud ledger." />
         
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <Card title="Backup Database">
@@ -86,7 +86,7 @@ const SettingsView: React.FC<{ onBackup: () => void; onRestore: (e: any) => void
                         <UploadCloud className="w-8 h-8" />
                     </div>
                     <h3 className="font-bold text-slate-900 mb-2">Import from File</h3>
-                    <p className="text-sm text-slate-500 mb-6">Restore your data from a previous backup. This will replace current data.</p>
+                    <p className="text-sm text-slate-500 mb-6">Restore your data from a previous backup. This will replace current cloud data.</p>
                     <label className="w-full py-3 bg-white border-2 border-slate-200 hover:border-gold-500 hover:text-gold-600 text-slate-600 font-bold rounded-xl transition-all cursor-pointer flex items-center justify-center gap-2">
                         <HardDrive className="w-4 h-4" /> Select Backup File
                         <input type="file" accept=".json" onChange={onRestore} className="hidden" />
@@ -100,7 +100,7 @@ const SettingsView: React.FC<{ onBackup: () => void; onRestore: (e: any) => void
                         <Trash2 className="w-8 h-8" />
                     </div>
                     <h3 className="font-bold text-slate-900 mb-2">System Reset</h3>
-                    <p className="text-sm text-slate-500 mb-6">Permanently delete all local data and start fresh. Cannot be undone.</p>
+                    <p className="text-sm text-slate-500 mb-6">Permanently delete all cloud data and start fresh. Cannot be undone.</p>
                     <button onClick={onReset} className="w-full py-3 bg-red-50 text-red-600 hover:bg-red-600 hover:text-white border border-red-100 font-bold rounded-xl transition-colors flex items-center justify-center gap-2">
                         <AlertTriangle className="w-4 h-4" /> Factory Reset
                     </button>
@@ -109,12 +109,12 @@ const SettingsView: React.FC<{ onBackup: () => void; onRestore: (e: any) => void
         </div>
         
         <div className="bg-slate-900 rounded-2xl p-6 flex items-start gap-4">
-            <Info className="w-6 h-6 text-gold-500 flex-shrink-0 mt-1" />
+            <Database className="w-6 h-6 text-gold-500 flex-shrink-0 mt-1" />
             <div>
-                <h4 className="text-white font-bold text-lg mb-1">About Data Privacy</h4>
+                <h4 className="text-white font-bold text-lg mb-1">Cloud Synchronization Active</h4>
                 <p className="text-slate-400 text-sm leading-relaxed">
-                    BullionKeep AI runs entirely in your browser. Your financial data is stored locally on this device and is never sent to a central server. 
-                    To access your data on another device, use the <strong>Backup</strong> button to save a file, and then <strong>Restore</strong> it on the new device.
+                    BullionKeep AI is connected to a secure Neon PostgreSQL database. All transactions and inventory changes are synchronized in real-time. 
+                    Data entered on this device will be instantly available on all other devices connected to this application.
                 </p>
             </div>
         </div>
@@ -128,6 +128,7 @@ function App() {
   const [marketRate, setMarketRate] = useState<string>(''); 
   const [toasts, setToasts] = useState<ToastMessage[]>([]);
   const [searchQuery, setSearchQuery] = useState('');
+  const [isDataLoaded, setIsDataLoaded] = useState(false); // New state to track loading
   
   // Delete Modal State
   const [deleteId, setDeleteId] = useState<string | null>(null);
@@ -140,19 +141,24 @@ function App() {
       end: new Date().toISOString().split('T')[0]
   });
   const [lockDate, setLockDate] = useState<string | null>(localStorage.getItem('bullion_lock_date') || null);
-  const [showLockSettings, setShowLockSettings] = useState(false);
 
-  // Load Data
+  // Load Data Async from DB
   useEffect(() => {
-    setInvoices(loadInvoices());
-    setInventory(loadInventory());
+    const initData = async () => {
+        const { invoices: dbInvoices, inventory: dbInventory } = await fetchData();
+        setInvoices(dbInvoices);
+        setInventory(dbInventory);
+        setIsDataLoaded(true); // Enable saving only after initial load
+    };
+    initData();
   }, []);
 
-  // Save Data
+  // Save Data to DB on Change (Only if loaded)
   useEffect(() => {
-    saveInvoices(invoices);
-    saveInventory(inventory);
-  }, [invoices, inventory]);
+    if (isDataLoaded) {
+        saveData(invoices, inventory);
+    }
+  }, [invoices, inventory, isDataLoaded]);
 
   useEffect(() => {
       if(lockDate) localStorage.setItem('bullion_lock_date', lockDate);
@@ -201,11 +207,10 @@ function App() {
 
   const currentStock = useMemo(() => searchFilteredInventory.reduce((acc, batch) => acc + batch.remainingQuantity, 0), [searchFilteredInventory]);
   const fifoValue = useMemo(() => searchFilteredInventory.reduce((acc, batch) => acc + (batch.remainingQuantity * batch.costPerGram), 0), [searchFilteredInventory]);
-  const weightedAvgCost = currentStock > 0 ? fifoValue / currentStock : 0;
-
+  
   const agingStats: AgingStats = useMemo(() => calculateStockAging(searchFilteredInventory), [searchFilteredInventory]);
 
-  const { customerData, totalProfit, profitMargin, profitTrendData, dailyProfit } = useMemo(() => {
+  const { customerData, totalProfit, profitTrendData, dailyProfit } = useMemo(() => {
       const customerStats: Record<string, CustomerStat & { avgQtyPerTx?: number, avgSellingPrice?: number, behaviorPattern?: string }> = {};
       let totalRevenueExTax = 0;
       let totalProfitCalc = 0;
@@ -298,9 +303,7 @@ function App() {
   }, [agingStats, invoices]);
 
   // Recalculates entire inventory from scratch based on a list of invoices
-  // This ensures FIFO integrity is maintained even after deleting a historical transaction
   const recalculateAllData = (allInvoices: Invoice[]) => {
-    // Sort by date ascending for correct FIFO processing
     const sorted = [...allInvoices].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime());
     let currentInventory: InventoryBatch[] = [];
     const processedInvoices: Invoice[] = [];
@@ -335,10 +338,6 @@ function App() {
                     }
                 }
             }
-            
-            // If remainingToSell > 0 here, it means we sold stock we didn't have (FIFO broke).
-            // In a strict system we block this, but for recalculation we proceed with best effort.
-            
             const profit = (inv.taxableAmount || (inv.quantityGrams * inv.ratePerGram)) - totalCOGS;
             processedInvoices.push({ ...inv, cogs: totalCOGS, profit });
         }
@@ -397,16 +396,11 @@ function App() {
         setInventory(prev => [...prev, newBatch].sort((a, b) => new Date(a.date).getTime() - new Date(b.date).getTime()));
         addToast('SUCCESS', 'Purchase recorded & Inventory Updated');
     } else {
-        // Optimization: For adding a new sale (latest date usually), we can just do incremental update
-        // instead of full recalc. However, if user adds a back-dated sale, full recalc is safer.
-        // For now, keeping the optimized incremental logic for standard usage, but if date is older than latest invoice, we should recalc.
-        
         const latestInvoiceDate = invoices.length > 0 ? invoices[0].date : '';
         if (latestInvoiceDate && invoice.date < latestInvoiceDate) {
-             // Back-dated transaction: Use full recalculation
              const newInvoices = [...invoices, invoice];
              const { updatedInvoices, updatedInventory } = recalculateAllData(newInvoices);
-             setInvoices(updatedInvoices.reverse()); // Store descending
+             setInvoices(updatedInvoices.reverse()); 
              setInventory(updatedInventory);
              addToast('SUCCESS', 'Back-dated Sale recorded. History Recalculated.');
              return;
@@ -441,12 +435,7 @@ function App() {
   // --- BACKUP & RESTORE LOGIC ---
   
   const handleBackup = () => {
-      const backupData = {
-          invoices,
-          inventory,
-          timestamp: new Date().toISOString(),
-          app: "BullionKeepAI"
-      };
+      const backupData = { invoices, inventory, timestamp: new Date().toISOString(), app: "BullionKeepAI" };
       downloadJSON(backupData, `bullionkeep_backup_${new Date().toISOString().split('T')[0]}.json`);
       addToast('SUCCESS', 'Backup file downloaded successfully.');
   };
@@ -454,1059 +443,541 @@ function App() {
   const handleRestore = (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
       if (!file) return;
-      
       const reader = new FileReader();
-      reader.onload = (event) => {
+      reader.onload = async (event) => {
           try {
               const data = JSON.parse(event.target?.result as string);
-              
-              if (data.app !== "BullionKeepAI") {
-                   if(!window.confirm("This file format looks different. Try importing anyway?")) return;
-              }
-
+              if (data.app !== "BullionKeepAI" && !window.confirm("Format looks different. Import anyway?")) return;
               if (Array.isArray(data.invoices) && Array.isArray(data.inventory)) {
-                  // Basic validation passed
                   setInvoices(data.invoices);
                   setInventory(data.inventory);
-                  addToast('SUCCESS', 'Database restored successfully.');
-                  // Also force re-save to local storage immediately just in case
-                  saveInvoices(data.invoices);
-                  saveInventory(data.inventory);
+                  // Force sync to DB immediately after restore
+                  await saveData(data.invoices, data.inventory);
+                  addToast('SUCCESS', 'Database restored and synchronized to cloud.');
               } else {
-                  addToast('ERROR', 'Invalid backup file structure.');
+                  addToast('ERROR', 'Invalid backup file.');
               }
           } catch (err) {
               console.error(err);
-              addToast('ERROR', 'Failed to parse backup file.');
+              addToast('ERROR', 'Failed to parse file.');
           }
       };
       reader.readAsText(file);
-      e.target.value = ''; // Reset input to allow re-selection
+      e.target.value = ''; 
   };
 
-  const handleReset = () => {
-      if(window.confirm("CRITICAL WARNING: This will permanently delete ALL data on this device. There is no undo. Are you absolutely sure?")) {
-          resetData(); setInvoices([]); setInventory([]);
-          addToast('SUCCESS', 'System Reset Complete. All data wiped.');
+  const handleReset = async () => {
+      if(window.confirm("CRITICAL WARNING: This will permanently delete ALL data from the cloud database. There is no undo. Are you absolutely sure?")) {
+          await resetData(); 
+          setInvoices([]); setInventory([]);
+          addToast('SUCCESS', 'System Reset Complete. Cloud data wiped.');
       }
   }
 
-  // --- EXPORT HANDLERS ---
-  
+  // --- EXPORT HANDLERS (Same as before) ---
   const generatePDF = (title: string, head: string[][], body: (string | number)[][], summary?: string[]) => {
       const doc = new jsPDF();
       doc.setFontSize(16);
       doc.text(title, 14, 15);
       doc.setFontSize(10);
       doc.text(`Generated: ${new Date().toLocaleDateString()}`, 14, 22);
-      
-      if (summary) {
-          summary.forEach((line, i) => doc.text(line, 14, 28 + (i * 5)));
-      }
-
-      autoTable(doc, {
-          startY: summary ? 30 + (summary.length * 5) : 30,
-          head: head,
-          body: body,
-          theme: 'grid',
-          styles: { fontSize: 8 },
-          headStyles: { fillColor: [209, 151, 38] }
-      });
+      if (summary) summary.forEach((line, i) => doc.text(line, 14, 28 + (i * 5)));
+      autoTable(doc, { startY: summary ? 30 + (summary.length * 5) : 30, head: head, body: body, theme: 'grid', styles: { fontSize: 8 }, headStyles: { fillColor: [209, 151, 38] } });
       doc.save(`${title.replace(/\s+/g, '_').toLowerCase()}.pdf`);
       addToast('SUCCESS', `${title} downloaded.`);
   };
 
   const handleInventoryExport = (type: 'CSV' | 'PDF') => {
       const data = inventory.filter(inv => inv.date >= dateRange.start && inv.date <= dateRange.end).map(b => ({
-          batchId: b.id,
-          date: b.date,
-          originalQty: b.originalQuantity,
-          remainingQty: b.remainingQuantity,
-          costPerGram: b.costPerGram,
-          totalValue: b.remainingQuantity * b.costPerGram,
-          status: b.remainingQuantity > 0 ? 'Active' : 'Closed'
+          batchId: b.id, date: b.date, originalQty: b.originalQuantity, remainingQty: b.remainingQuantity, costPerGram: b.costPerGram, totalValue: b.remainingQuantity * b.costPerGram, status: b.remainingQuantity > 0 ? 'Active' : 'Closed'
       }));
-
       if (type === 'CSV') {
           const headers = ['Batch ID', 'Date', 'Original Qty (g)', 'Remaining Qty (g)', 'Cost (INR/g)', 'Total Value (INR)', 'Status'];
-          const csv = [
-              headers.join(','),
-              ...data.map(r => [r.batchId, r.date, r.originalQty, r.remainingQty, r.costPerGram, r.totalValue, r.status].join(','))
-          ].join('\n');
+          const csv = [headers.join(','), ...data.map(r => [r.batchId, r.date, r.originalQty, r.remainingQty, r.costPerGram, r.totalValue, r.status].join(','))].join('\n');
           downloadCSV(csv, `inventory_report_${new Date().toISOString().split('T')[0]}.csv`);
           addToast('SUCCESS', 'Inventory CSV downloaded.');
       } else {
-          generatePDF('Inventory Report', 
-            [['Batch ID', 'Date', 'Original (g)', 'Remaining (g)', 'Cost/g', 'Value', 'Status']],
-            data.map(r => [r.batchId, r.date, formatGrams(r.originalQty), formatGrams(r.remainingQty), formatCurrency(r.costPerGram), formatCurrency(r.totalValue), r.status])
-          );
+          generatePDF('Inventory Report', [['Batch ID', 'Date', 'Original (g)', 'Remaining (g)', 'Cost/g', 'Value', 'Status']], data.map(r => [r.batchId, r.date, formatGrams(r.originalQty), formatGrams(r.remainingQty), formatCurrency(r.costPerGram), formatCurrency(r.totalValue), r.status]));
       }
   };
-
   const handlePriceExport = (type: 'CSV' | 'PDF', purchases: Invoice[]) => {
        if (type === 'CSV') {
            const headers = ['Date', 'Supplier', 'Quantity (g)', 'Rate (INR/g)', 'Total (INR)'];
-           const csv = [
-               headers.join(','),
-               ...purchases.map(p => [p.date, `"${p.partyName}"`, p.quantityGrams, p.ratePerGram, p.quantityGrams * p.ratePerGram].join(','))
-           ].join('\n');
+           const csv = [headers.join(','), ...purchases.map(p => [p.date, `"${p.partyName}"`, p.quantityGrams, p.ratePerGram, p.quantityGrams * p.ratePerGram].join(','))].join('\n');
            downloadCSV(csv, `price_analysis_purchases_${dateRange.start}_${dateRange.end}.csv`);
            addToast('SUCCESS', 'Price Data CSV downloaded.');
        } else {
-           generatePDF('Price Analysis - Purchases', 
-             [['Date', 'Supplier', 'Qty (g)', 'Rate (INR/g)', 'Total (INR)']],
-             purchases.map(p => [p.date, p.partyName, formatGrams(p.quantityGrams), formatCurrency(p.ratePerGram), formatCurrency(p.quantityGrams * p.ratePerGram)])
-           );
+           generatePDF('Price Analysis - Purchases', [['Date', 'Supplier', 'Qty (g)', 'Rate (INR/g)', 'Total (INR)']], purchases.map(p => [p.date, p.partyName, formatGrams(p.quantityGrams), formatCurrency(p.ratePerGram), formatCurrency(p.quantityGrams * p.ratePerGram)]));
        }
   };
-
   const handleCustomerExport = (type: 'CSV' | 'PDF') => {
        if (type === 'CSV') {
            const headers = ['Customer', 'Frequency', 'Total Grams', 'Revenue (Ex GST)', 'Avg Price', 'Avg Profit/g', 'Pattern'];
-           const csv = [
-               headers.join(','),
-               ...customerData.map(c => [
-                   `"${c.name}"`, c.txCount, c.totalGrams, c.totalSpend, c.avgSellingPrice, c.avgProfitPerGram, c.behaviorPattern
-               ].join(','))
-           ].join('\n');
+           const csv = [headers.join(','), ...customerData.map(c => [`"${c.name}"`, c.txCount, c.totalGrams, c.totalSpend, c.avgSellingPrice, c.avgProfitPerGram, c.behaviorPattern].join(','))].join('\n');
            downloadCSV(csv, `customer_insights_${dateRange.start}_${dateRange.end}.csv`);
            addToast('SUCCESS', 'Customer Data CSV downloaded.');
        } else {
-           generatePDF('Customer Intelligence Report', 
-             [['Customer', 'Freq', 'Total Grams', 'Revenue (Ex GST)', 'Avg Price', 'Profit/g', 'Pattern']],
-             customerData.map(c => [c.name, c.txCount, formatGrams(c.totalGrams), formatCurrency(c.totalSpend), formatCurrency(c.avgSellingPrice || 0), formatCurrency(c.avgProfitPerGram || 0), c.behaviorPattern || ''])
-           );
+           generatePDF('Customer Intelligence Report', [['Customer', 'Freq', 'Total Grams', 'Revenue (Ex GST)', 'Avg Price', 'Profit/g', 'Pattern']], customerData.map(c => [c.name, c.txCount, formatGrams(c.totalGrams), formatCurrency(c.totalSpend), formatCurrency(c.avgSellingPrice || 0), formatCurrency(c.avgProfitPerGram || 0), c.behaviorPattern || '']));
        }
   };
-
   const handleSupplierExport = (type: 'CSV' | 'PDF') => {
        if (type === 'CSV') {
            const headers = ['Supplier', 'Transactions', 'Total Volume (g)', 'Avg Rate', 'Min Rate', 'Max Rate', 'Volatility'];
-           const csv = [
-               headers.join(','),
-               ...supplierData.map(s => [
-                   `"${s.name}"`, s.txCount, s.totalGramsPurchased, s.avgRate, s.minRate, s.maxRate, s.volatility
-               ].join(','))
-           ].join('\n');
+           const csv = [headers.join(','), ...supplierData.map(s => [`"${s.name}"`, s.txCount, s.totalGramsPurchased, s.avgRate, s.minRate, s.maxRate, s.volatility].join(','))].join('\n');
            downloadCSV(csv, `supplier_insights_${dateRange.start}_${dateRange.end}.csv`);
            addToast('SUCCESS', 'Supplier Data CSV downloaded.');
        } else {
-           generatePDF('Supplier Insights Report', 
-             [['Supplier', 'Tx Count', 'Vol (g)', 'Avg Rate', 'Min', 'Max', 'Volatility']],
-             supplierData.map(s => [s.name, s.txCount, formatGrams(s.totalGramsPurchased), formatCurrency(s.avgRate), formatCurrency(s.minRate), formatCurrency(s.maxRate), formatCurrency(s.volatility)])
-           );
+           generatePDF('Supplier Insights Report', [['Supplier', 'Tx Count', 'Vol (g)', 'Avg Rate', 'Min', 'Max', 'Volatility']], supplierData.map(s => [s.name, s.txCount, formatGrams(s.totalGramsPurchased), formatCurrency(s.avgRate), formatCurrency(s.minRate), formatCurrency(s.maxRate), formatCurrency(s.volatility)]));
        }
   };
-
   const handleLedgerExport = (type: 'CSV' | 'PDF', monthlyData: any[], totals: any) => {
       if (type === 'CSV') {
           const headers = ['Month', 'Turnover (Ex GST)', 'Profit', 'Margin %', 'Qty Sold'];
-          const csv = [
-              headers.join(','),
-              ...monthlyData.map(m => [
-                  m.date.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'}), m.turnover, m.profit, (m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2), m.qty
-              ].join(','))
-          ].join('\n');
+          const csv = [headers.join(','), ...monthlyData.map(m => [m.date.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'}), m.turnover, m.profit, (m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2), m.qty].join(','))].join('\n');
           downloadCSV(csv, `business_ledger_lifetime.csv`);
           addToast('SUCCESS', 'Ledger CSV downloaded.');
       } else {
-          generatePDF('Business Performance Ledger', 
-            [['Month', 'Turnover (Ex GST)', 'Profit', 'Margin %', 'Qty Sold']],
-            monthlyData.map(m => [m.date.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'}), formatCurrency(m.turnover), formatCurrency(m.profit), (m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2) + '%', formatGrams(m.qty)]),
-            [
-                `Total Turnover (Ex GST): ${formatCurrency(totals.turnover)}`,
-                `Total Profit: ${formatCurrency(totals.profit)}`,
-                `Overall Margin: ${totals.margin.toFixed(2)}%`,
-                `Total Gold Sold: ${formatGrams(totals.qty)}`
-            ]
-          );
+          generatePDF('Business Performance Ledger', [['Month', 'Turnover (Ex GST)', 'Profit', 'Margin %', 'Qty Sold']], monthlyData.map(m => [m.date.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'}), formatCurrency(m.turnover), formatCurrency(m.profit), (m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2) + '%', formatGrams(m.qty)]), [`Total Turnover (Ex GST): ${formatCurrency(totals.turnover)}`, `Total Profit: ${formatCurrency(totals.profit)}`, `Overall Margin: ${totals.margin.toFixed(2)}%`, `Total Gold Sold: ${formatGrams(totals.qty)}`]);
       }
   };
-
   const handleInvoicesExport = (type: 'CSV' | 'PDF', selectedOnly: Invoice[] | null = null) => {
        const source = selectedOnly || filteredInvoices;
        const data = [...source].sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime());
-       
        if (type === 'CSV') {
            const headers = ['Date', 'Type', 'Party', 'Qty (g)', 'Rate (INR/g)', 'My Cost (INR/g)', 'Taxable (Ex GST)', 'GST (INR)', 'Total (Inc GST)', 'My Total Cost (Ex GST)', 'Profit (Ex GST)'];
-           const csv = [
-               headers.join(','),
-               ...data.map(i => {
+           const csv = [headers.join(','), ...data.map(i => {
                    const myCost = i.type === 'SALE' && i.cogs ? (i.cogs / i.quantityGrams) : 0;
                    const myTotalCost = i.type === 'SALE' ? (i.cogs || 0) : i.taxableAmount;
-                   return [
-                       i.date, i.type, `"${i.partyName}"`, i.quantityGrams, i.ratePerGram, myCost > 0 ? myCost.toFixed(2) : '-', i.taxableAmount, i.gstAmount, i.totalAmount, myTotalCost, i.profit || 0
-                   ].join(',')
-               })
-           ].join('\n');
+                   return [i.date, i.type, `"${i.partyName}"`, i.quantityGrams, i.ratePerGram, myCost > 0 ? myCost.toFixed(2) : '-', i.taxableAmount, i.gstAmount, i.totalAmount, myTotalCost, i.profit || 0].join(',')
+               })].join('\n');
            downloadCSV(csv, `transactions_export_${new Date().toISOString().split('T')[0]}.csv`);
            addToast('SUCCESS', 'Transactions CSV downloaded.');
        } else {
-           generatePDF('Transaction Report', 
-             [['Date', 'Type', 'Party', 'Qty', 'Rate', 'My Cost', 'Taxable', 'GST', 'Total', 'My Total Cost', 'Profit']],
-             data.map(i => {
+           generatePDF('Transaction Report', [['Date', 'Type', 'Party', 'Qty', 'Rate', 'My Cost', 'Taxable', 'GST', 'Total', 'My Total Cost', 'Profit']], data.map(i => {
                  const myCost = i.type === 'SALE' && i.cogs ? (i.cogs / i.quantityGrams) : 0;
                  const myTotalCost = i.type === 'SALE' ? (i.cogs || 0) : i.taxableAmount;
-                 return [
-                     i.date, 
-                     i.type.substring(0,1), 
-                     i.partyName, 
-                     formatGrams(i.quantityGrams), 
-                     formatCurrency(i.ratePerGram),
-                     myCost > 0 ? formatCurrency(myCost) : '-',
-                     formatCurrency(i.taxableAmount), 
-                     formatCurrency(i.gstAmount), 
-                     formatCurrency(i.totalAmount), 
-                     formatCurrency(myTotalCost),
-                     i.profit ? formatCurrency(i.profit) : '-'
-                 ]
-             })
-           );
+                 return [i.date, i.type.substring(0,1), i.partyName, formatGrams(i.quantityGrams), formatCurrency(i.ratePerGram), myCost > 0 ? formatCurrency(myCost) : '-', formatCurrency(i.taxableAmount), formatCurrency(i.gstAmount), formatCurrency(i.totalAmount), formatCurrency(myTotalCost), i.profit ? formatCurrency(i.profit) : '-']
+             }));
        }
   };
+  const renderDateFilter = () => (<DateRangePicker startDate={dateRange.start} endDate={dateRange.end} onChange={(start, end) => setDateRange({ start, end })} />);
 
-  const renderDateFilter = () => (
-      <DateRangePicker startDate={dateRange.start} endDate={dateRange.end} onChange={(start, end) => setDateRange({ start, end })} />
+  // --- VIEW RENDERERS ---
+  const DashboardView = () => (
+      <div className="space-y-6 animate-enter">
+          <SectionHeader title="Dashboard" subtitle="Overview of your inventory and financial health." action={renderDateFilter()}/>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+              <StatsCard title="Current Stock" value={formatGrams(currentStock)} subValue={`${inventory.length} Batches`} icon={Coins} isActive/>
+              <StatsCard title="Inventory Value" value={formatCurrency(fifoValue)} subValue="FIFO Basis" icon={Scale} delayIndex={1}/>
+              <StatsCard title="Net Profit" value={formatCurrency(dailyProfit.reduce((sum, d) => sum + d.profit, 0))} subValue="Selected Period" icon={TrendingUp} delayIndex={2}/>
+              <StatsCard title="Transactions" value={filteredInvoices.length.toString()} subValue={`${filteredInvoices.filter(i => i.type === 'SALE').length} Sales`} icon={ArrowRightLeft} delayIndex={3}/>
+          </div>
+          {/* Alerts */}
+          {alerts.length > 0 && (
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                  {alerts.map((alert, idx) => (
+                      <div key={idx} className={`p-4 rounded-xl border flex items-start gap-4 ${alert.severity === 'HIGH' ? 'bg-red-50 border-red-100 text-red-800' : 'bg-amber-50 border-amber-100 text-amber-800'}`}>
+                          <div className={`p-2 rounded-lg ${alert.severity === 'HIGH' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}><AlertTriangle className="w-5 h-5" /></div>
+                          <div><h4 className="font-bold text-sm uppercase tracking-wide mb-1">{alert.context}: {alert.severity} Risk</h4><p className="text-sm">{alert.message}</p></div>
+                      </div>
+                  ))}
+              </div>
+          )}
+          {/* Quick Actions & Chart */}
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+              <Card title="Profit Trend" className="lg:col-span-2 min-h-[350px]">
+                    <div className="h-[300px] w-full">
+                        <ResponsiveContainer width="100%" height="100%">
+                            <AreaChart data={profitTrendData}>
+                                <defs><linearGradient id="colorProfitDb" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/><stop offset="95%" stopColor="#10b981" stopOpacity={0}/></linearGradient></defs>
+                                <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
+                                <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
+                                <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} tickFormatter={(v) => `${v/1000}k`}/>
+                                <Tooltip contentStyle={{backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'}} formatter={(value: number) => [formatCurrency(value), 'Net Profit']}/>
+                                <Area type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorProfitDb)" />
+                            </AreaChart>
+                        </ResponsiveContainer>
+                    </div>
+              </Card>
+              <Card title="Quick Actions" className="lg:col-span-1">
+                  <div className="space-y-3">
+                      <button onClick={() => setActiveTab('invoices')} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-gold-200 hover:shadow-md transition-all flex items-center gap-3 text-left group">
+                          <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-gold-50 text-gold-600 transition-colors"><FileText className="w-5 h-5"/></div>
+                          <div><h4 className="font-bold text-slate-900">New Invoice</h4><p className="text-xs text-slate-500">Record purchase or sale</p></div>
+                          <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-gold-500"/>
+                      </button>
+                      <button onClick={() => setActiveTab('inventory')} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-200 hover:shadow-md transition-all flex items-center gap-3 text-left group">
+                          <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-blue-50 text-blue-600 transition-colors"><ArrowUpRight className="w-5 h-5"/></div>
+                          <div><h4 className="font-bold text-slate-900">Check Stock</h4><p className="text-xs text-slate-500">View inventory batches</p></div>
+                          <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-blue-500"/>
+                      </button>
+                      <button onClick={() => window.print()} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-slate-300 hover:shadow-md transition-all flex items-center gap-3 text-left group">
+                          <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-slate-100 text-slate-600 transition-colors"><FileDown className="w-5 h-5"/></div>
+                          <div><h4 className="font-bold text-slate-900">Print Report</h4><p className="text-xs text-slate-500">Export current view</p></div>
+                          <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-slate-500"/>
+                      </button>
+                  </div>
+              </Card>
+          </div>
+      </div>
   );
 
-  // --- SUB-VIEWS ---
-
-  const DashboardView = () => {
-      // Calculate basic stats
-      const totalStock = currentStock; 
-      const stockValue = fifoValue; 
-      const recentProfit = dailyProfit.reduce((sum, d) => sum + d.profit, 0);
-
-      return (
-          <div className="space-y-6 animate-enter">
-              <SectionHeader 
-                  title="Dashboard" 
-                  subtitle="Overview of your inventory and financial health." 
-                  action={renderDateFilter()}
-              />
-
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-                  <StatsCard 
-                      title="Current Stock" 
-                      value={formatGrams(totalStock)} 
-                      subValue={`${inventory.length} Batches`} 
-                      icon={Coins} 
-                      isActive
-                  />
-                  <StatsCard 
-                      title="Inventory Value" 
-                      value={formatCurrency(stockValue)} 
-                      subValue="FIFO Basis" 
-                      icon={Scale} 
-                      delayIndex={1}
-                  />
-                  <StatsCard 
-                      title="Net Profit" 
-                      value={formatCurrency(recentProfit)} 
-                      subValue="Selected Period" 
-                      icon={TrendingUp} 
-                      delayIndex={2}
-                  />
-                  <StatsCard 
-                      title="Transactions" 
-                      value={filteredInvoices.length.toString()} 
-                      subValue={`${filteredInvoices.filter(i => i.type === 'SALE').length} Sales`} 
-                      icon={ArrowRightLeft} 
-                      delayIndex={3}
-                  />
-              </div>
-
-              {alerts.length > 0 && (
-                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                      {alerts.map((alert, idx) => (
-                          <div key={idx} className={`p-4 rounded-xl border flex items-start gap-4 ${alert.severity === 'HIGH' ? 'bg-red-50 border-red-100 text-red-800' : 'bg-amber-50 border-amber-100 text-amber-800'}`}>
-                              <div className={`p-2 rounded-lg ${alert.severity === 'HIGH' ? 'bg-red-100 text-red-600' : 'bg-amber-100 text-amber-600'}`}>
-                                  <AlertTriangle className="w-5 h-5" />
-                              </div>
-                              <div>
-                                  <h4 className="font-bold text-sm uppercase tracking-wide mb-1">{alert.context}: {alert.severity} Risk</h4>
-                                  <p className="text-sm">{alert.message}</p>
-                              </div>
-                          </div>
-                      ))}
-                  </div>
-              )}
-
-              <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                  <Card title="Profit Trend" className="lg:col-span-2 min-h-[350px]">
-                        <div className="h-[300px] w-full">
-                            <ResponsiveContainer width="100%" height="100%">
-                                <AreaChart data={profitTrendData}>
-                                    <defs>
-                                        <linearGradient id="colorProfitDb" x1="0" y1="0" x2="0" y2="1">
-                                            <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                                            <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                                        </linearGradient>
-                                    </defs>
-                                    <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
-                                    <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
-                                    <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} tickFormatter={(v) => `${v/1000}k`}/>
-                                    <Tooltip 
-                                        contentStyle={{backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'}} 
-                                        formatter={(value: number) => [formatCurrency(value), 'Net Profit']}
-                                    />
-                                    <Area type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorProfitDb)" />
-                                </AreaChart>
-                            </ResponsiveContainer>
-                        </div>
-                  </Card>
-
-                  <Card title="Quick Actions" className="lg:col-span-1">
-                      <div className="space-y-3">
-                          <button onClick={() => setActiveTab('invoices')} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-gold-200 hover:shadow-md transition-all flex items-center gap-3 text-left group">
-                              <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-gold-50 text-gold-600 transition-colors"><FileText className="w-5 h-5"/></div>
-                              <div>
-                                  <h4 className="font-bold text-slate-900">New Invoice</h4>
-                                  <p className="text-xs text-slate-500">Record purchase or sale</p>
-                              </div>
-                              <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-gold-500"/>
-                          </button>
-                          <button onClick={() => setActiveTab('inventory')} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-blue-200 hover:shadow-md transition-all flex items-center gap-3 text-left group">
-                              <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-blue-50 text-blue-600 transition-colors"><ArrowUpRight className="w-5 h-5"/></div>
-                              <div>
-                                  <h4 className="font-bold text-slate-900">Check Stock</h4>
-                                  <p className="text-xs text-slate-500">View inventory batches</p>
-                              </div>
-                              <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-blue-500"/>
-                          </button>
-                          <button onClick={() => window.print()} className="w-full p-4 rounded-xl border border-slate-100 bg-slate-50 hover:bg-white hover:border-slate-300 hover:shadow-md transition-all flex items-center gap-3 text-left group">
-                              <div className="p-3 bg-white rounded-lg shadow-sm group-hover:bg-slate-100 text-slate-600 transition-colors"><FileDown className="w-5 h-5"/></div>
-                              <div>
-                                  <h4 className="font-bold text-slate-900">Print Report</h4>
-                                  <p className="text-xs text-slate-500">Export current view</p>
-                              </div>
-                              <ChevronRight className="w-4 h-4 ml-auto text-slate-300 group-hover:text-slate-500"/>
-                          </button>
-                      </div>
-                  </Card>
-              </div>
-          </div>
-      );
-  };
-
-  const InvoicesView = () => {
-      const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
-
-      // Update selections when global invoices change (e.g. deletion)
-      useEffect(() => {
-        setSelectedIds(prev => {
-            const next = new Set(prev);
-            for(const id of next) {
-                if(!invoices.find(i => i.id === id)) next.delete(id);
-            }
-            return next;
-        });
-      }, [invoices]);
-
-      const handleSelectAll = () => {
-        if (selectedIds.size === filteredInvoices.length && filteredInvoices.length > 0) {
-            setSelectedIds(new Set());
-        } else {
-            setSelectedIds(new Set(filteredInvoices.map(i => i.id)));
-        }
-      };
-
-      const handleSelectRow = (id: string) => {
-        const newSet = new Set(selectedIds);
-        if (newSet.has(id)) newSet.delete(id);
-        else newSet.add(id);
-        setSelectedIds(newSet);
-      };
-
-      const executeBulkExport = (type: 'CSV' | 'PDF') => {
-          const selectedInvoices = invoices.filter(i => selectedIds.has(i.id));
-          handleInvoicesExport(type, selectedInvoices);
-      };
-      
-      const executeBulkDelete = () => {
-          initiateBulkDelete(Array.from(selectedIds));
-      };
-
-      const isAllSelected = filteredInvoices.length > 0 && selectedIds.size === filteredInvoices.length;
-
-      return (
-      <div className="flex flex-col lg:flex-row gap-6 relative items-start h-full">
-          <div className="w-full lg:w-[380px] xl:w-[420px] flex-shrink-0 lg:sticky lg:top-0 transition-all">
-              <InvoiceForm onAdd={handleAddInvoice} currentStock={currentStock} lockDate={lockDate} />
-          </div>
-          <div className="flex-1 w-full min-w-0">
-              <Card title="Recent Transactions" className="min-h-[600px] h-full flex flex-col relative" delay={200}
-                 action={
-                     <div className="flex gap-2 items-center">
-                        <ExportMenu onExport={handleInvoicesExport} />
-                        {renderDateFilter()}
-                     </div>
-                 }
-              >
-                  <div className="overflow-auto flex-1 -mx-6 px-6 pb-20 relative [&::-webkit-scrollbar]:h-2 [&::-webkit-scrollbar-track]:bg-transparent [&::-webkit-scrollbar-thumb]:bg-transparent [&::-webkit-scrollbar-thumb]:rounded-full hover:[&::-webkit-scrollbar-thumb]:bg-slate-300 transition-colors">
-                      <table className="w-full text-sm text-left border-separate border-spacing-y-2 min-w-[1000px]">
-                          <thead className="text-slate-400 sticky top-0 bg-white/95 backdrop-blur z-10">
-                              <tr>
-                                  <th className="px-4 py-3 border-b border-slate-50 w-10">
-                                      <button onClick={handleSelectAll} className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${isAllSelected ? 'bg-gold-500 border-gold-500 text-white' : 'border-slate-300 hover:border-gold-500'}`}>
-                                          {isAllSelected && <CheckSquare className="w-3 h-3" />}
-                                      </button>
-                                  </th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Date</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Type</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50">Party</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Qty</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Rate/g</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Cost/g</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Taxable (Ex GST)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">GST</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Total (Inc)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">My Total Cost (Ex GST)</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-right">Profit</th>
-                                  <th className="px-4 py-3 font-semibold uppercase text-xs tracking-wider border-b border-slate-50 text-center">Action</th>
-                              </tr>
-                          </thead>
-                          <tbody>
-                              {filteredInvoices.length === 0 ? (
-                                  <tr><td colSpan={13} className="px-4 py-20 text-center text-slate-400 italic">No transactions recorded in this period.</td></tr>
-                              ) : (
-                                  filteredInvoices.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map((inv, i) => {
-                                      const myCostPerGram = inv.type === 'SALE' && inv.cogs ? inv.cogs / inv.quantityGrams : null;
-                                      const isSelected = selectedIds.has(inv.id);
-                                      return (
-                                      <tr key={inv.id} className={`group transition-transform duration-200 ${isSelected ? 'bg-gold-50/30' : 'hover:scale-[1.01]'}`}>
-                                          <td className={`px-4 py-3 border-y border-l border-transparent rounded-l-xl ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
-                                              <button onClick={() => handleSelectRow(inv.id)} className={`w-4 h-4 rounded border flex items-center justify-center transition-colors ${isSelected ? 'bg-gold-500 border-gold-500 text-white' : 'border-slate-300 hover:border-gold-500 bg-white'}`}>
-                                                  {isSelected && <CheckSquare className="w-3 h-3" />}
-                                              </button>
-                                          </td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-xs text-slate-500 ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{inv.date}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
-                                              <span className={`inline-flex items-center px-2.5 py-1 rounded-md text-[10px] font-bold uppercase tracking-wide border ${inv.type === 'PURCHASE' ? 'bg-blue-50 text-blue-600 border-blue-100' : 'bg-green-50 text-green-600 border-green-100'}`}>{inv.type === 'PURCHASE' ? 'In' : 'Out'}</span>
-                                          </td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-medium text-slate-900 truncate max-w-[150px] ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{inv.partyName}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-600 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatGrams(inv.quantityGrams)}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-500 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.ratePerGram).replace('.00','')}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-500 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
-                                              {myCostPerGram ? formatCurrency(myCostPerGram).replace('.00','') : '-'}
-                                          </td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono font-medium text-slate-900 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.taxableAmount)}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-500 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.gstAmount)}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono text-slate-400 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>{formatCurrency(inv.totalAmount)}</td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono font-medium text-slate-700 text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
-                                              {formatCurrency(inv.type === 'SALE' ? (inv.cogs || 0) : inv.taxableAmount)}
-                                          </td>
-                                          <td className={`px-4 py-3 border-y border-transparent font-mono font-bold text-right ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'} ${(inv.profit || 0) > 0 ? 'text-green-600' : (inv.profit || 0) < 0 ? 'text-red-600' : 'text-slate-300'}`}>
-                                              {inv.type === 'SALE' ? formatCurrency(inv.profit || 0) : '-'}
-                                          </td>
-                                          <td className={`px-4 py-3 border-y border-r border-transparent rounded-r-xl text-center ${isSelected ? 'border-gold-100' : 'bg-slate-50/50 group-hover:bg-white group-hover:border-slate-100'}`}>
-                                              <button onClick={() => initiateDelete(inv.id)} className="p-1.5 rounded-lg text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors">
-                                                  <Trash2 className="w-4 h-4"/>
-                                              </button>
-                                          </td>
-                                      </tr>
-                                  )})
-                              )}
-                          </tbody>
-                      </table>
-                  </div>
-
-                  {/* Bulk Action Bar */}
-                  {selectedIds.size > 0 && (
-                      <div className="absolute bottom-6 left-1/2 -translate-x-1/2 bg-slate-900 text-white rounded-xl shadow-2xl flex items-center gap-4 px-6 py-3 animate-slide-up z-20">
-                          <div className="flex items-center gap-3 pr-4 border-r border-slate-700">
-                              <span className="bg-gold-500 text-xs font-bold px-2 py-0.5 rounded text-white">{selectedIds.size}</span>
-                              <span className="text-sm font-medium">Selected</span>
-                          </div>
-                          <div className="flex items-center gap-2">
-                              <button onClick={() => executeBulkExport('CSV')} className="p-2 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors" title="Export CSV">
-                                  <FileSpreadsheet className="w-4 h-4" />
-                              </button>
-                              <button onClick={() => executeBulkExport('PDF')} className="p-2 hover:bg-slate-800 rounded-lg text-slate-300 hover:text-white transition-colors" title="Export PDF">
-                                  <FileText className="w-4 h-4" />
-                              </button>
-                              <div className="w-px h-4 bg-slate-700 mx-1"></div>
-                              <button onClick={executeBulkDelete} className="p-2 hover:bg-red-900/50 text-red-400 hover:text-red-300 rounded-lg transition-colors flex items-center gap-2">
-                                  <Trash2 className="w-4 h-4" />
-                                  <span className="text-xs font-bold">Delete</span>
-                              </button>
-                          </div>
-                          <button onClick={() => setSelectedIds(new Set())} className="ml-2 p-1 hover:bg-slate-800 rounded-full text-slate-500 hover:text-white">
-                              <X className="w-4 h-4" />
-                          </button>
-                      </div>
-                  )}
-              </Card>
-          </div>
-      </div>
-  )};
-
-  const CustomerInsightsView = () => {
-       // ... existing CustomerInsightsView code
-       const COLORS = ['#d19726', '#e4c76d', '#b4761e', '#f5eccb', '#90561a', '#94a3b8'];
-       const pieData = customerData.slice(0, 5).map(c => ({ name: c.name, value: c.totalGrams }));
-       const others = customerData.slice(5).reduce((acc, c) => acc + c.totalGrams, 0);
-       if (others > 0) pieData.push({ name: 'Others', value: others });
-
-       return (
-           <div className="space-y-6 animate-enter">
-                <SectionHeader 
-                    title="Customer Intelligence" 
-                    subtitle="Analyze customer behavior and profitability." 
-                    action={
-                        <div className="flex gap-2 items-center">
-                            <ExportMenu onExport={handleCustomerExport} />
-                            {renderDateFilter()}
-                        </div>
-                    }
-                />
-                
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {customerData.slice(0, 3).map((c, i) => (
-                        <div key={i} className="bg-white p-6 rounded-2xl shadow-card border border-slate-100 relative overflow-hidden group hover:-translate-y-1 transition-transform duration-300">
-                             <div className="absolute top-0 right-0 w-24 h-24 bg-gradient-to-br from-slate-50 to-slate-100 rounded-bl-full -mr-4 -mt-4 transition-transform group-hover:scale-110"></div>
-                             <div className="relative z-10 flex justify-between items-start mb-4">
-                                 <div>
-                                     <div className="flex items-center gap-2 mb-1">
-                                        <h3 className="font-bold text-lg text-slate-900 truncate max-w-[150px]">{c.name}</h3>
-                                        {i === 0 && <Crown className="w-4 h-4 text-gold-500 fill-gold-500" />}
-                                     </div>
-                                     <span className="px-2 py-0.5 bg-slate-100 text-slate-600 rounded text-[10px] font-bold uppercase tracking-wide">{c.behaviorPattern.split('(')[0]}</span>
-                                 </div>
-                                 <div className="w-10 h-10 rounded-full bg-slate-900 text-white flex items-center justify-center font-bold shadow-lg">
-                                     #{i+1}
-                                 </div>
-                             </div>
-                             <div className="relative z-10 space-y-2">
-                                 <div className="flex justify-between text-sm"><span className="text-slate-500">Total Bought</span><span className="font-mono font-bold">{formatGrams(c.totalGrams)}</span></div>
-                                 <div className="flex justify-between text-sm"><span className="text-slate-500">Revenue</span><span className="font-mono font-bold text-slate-700">{formatCurrency(c.totalSpend)}</span></div>
-                                 <div className="flex justify-between text-sm"><span className="text-slate-500">Profit Contrib.</span><span className="font-mono font-bold text-green-600">{formatCurrency(c.profitContribution)}</span></div>
-                             </div>
-                        </div>
-                    ))}
-                </div>
-
-                <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-                     <Card title="Customer Database" className="lg:col-span-2">
-                          <div className="overflow-x-auto">
-                              <table className="w-full text-sm text-left">
-                                  <thead className="text-slate-500 bg-slate-50/50">
-                                      <tr>
-                                          <th className="px-4 py-3">Customer</th>
-                                          <th className="px-4 py-3 text-center">Tx Freq</th>
-                                          <th className="px-4 py-3 text-right">Volume</th>
-                                          <th className="px-4 py-3 text-right">Avg Price</th>
-                                          <th className="px-4 py-3 text-right">Margin</th>
-                                          <th className="px-4 py-3 text-right">Total Profit</th>
-                                      </tr>
-                                  </thead>
-                                  <tbody>
-                                      {customerData.map((c, i) => (
-                                          <tr key={i} className="hover:bg-slate-50 border-b border-slate-50">
-                                              <td className="px-4 py-3 font-medium text-slate-900">{c.name}</td>
-                                              <td className="px-4 py-3 text-center text-slate-500">{c.txCount}</td>
-                                              <td className="px-4 py-3 text-right font-mono text-slate-600">{formatGrams(c.totalGrams)}</td>
-                                              <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(c.avgSellingPrice || 0)}</td>
-                                              <td className="px-4 py-3 text-right">
-                                                  <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${c.margin && c.margin > 1.5 ? 'bg-green-50 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                                                      {c.margin ? c.margin.toFixed(2) : '0.00'}%
-                                                  </span>
-                                              </td>
-                                              <td className="px-4 py-3 text-right font-mono font-bold text-green-600">{formatCurrency(c.profitContribution)}</td>
-                                          </tr>
-                                      ))}
-                                  </tbody>
-                              </table>
-                          </div>
-                     </Card>
-
-                     <Card title="Volume Share" className="min-h-[350px]">
-                         <ResponsiveContainer width="100%" height={300}>
-                             <PieChart>
-                                 <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                                     {pieData.map((entry, index) => (
-                                         <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                                     ))}
-                                 </Pie>
-                                 <Tooltip formatter={(val:number) => formatGrams(val)} contentStyle={{borderRadius: '8px'}} />
-                                 <Legend verticalAlign="bottom" height={36}/>
-                             </PieChart>
-                         </ResponsiveContainer>
-                     </Card>
-                </div>
-           </div>
-       );
-  };
-
-  const PriceAnalysisView = () => {
-      // ... existing PriceAnalysisView code
-      const priceMetrics = useMemo(() => {
-          const purchases = filteredInvoices.filter(i => i.type === 'PURCHASE');
-          const sales = filteredInvoices.filter(i => i.type === 'SALE');
+  const InvoicesView = () => (
+      <div className="space-y-6 animate-slide-up">
+          <SectionHeader title="Invoices" subtitle="Record and manage all gold transactions." action={<div className="flex gap-2 items-center"><ExportMenu onExport={(t) => handleInvoicesExport(t)} />{renderDateFilter()}</div>}/>
           
-          const trendData = [];
-          const start = new Date(dateRange.start);
-          const end = new Date(dateRange.end);
-          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
-              const dateStr = d.toISOString().split('T')[0];
-              const daySales = sales.filter(inv => inv.date === dateStr);
-              const totalVal = daySales.reduce((acc, i) => acc + (i.ratePerGram * i.quantityGrams), 0);
-              const totalQty = daySales.reduce((acc, i) => acc + i.quantityGrams, 0);
-              trendData.push({
-                  date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }),
-                  avgSellPrice: totalQty > 0 ? totalVal / totalQty : null
-              });
-          }
-
-          return { trendData, purchases };
-      }, [filteredInvoices, dateRange]);
-
-      return (
-        <div className="space-y-8 animate-enter">
-             <SectionHeader 
-                title="Price Intelligence & Spread Analysis" 
-                subtitle="Pricing trends, spreads, and supplier consistency." 
-                action={
-                    <div className="flex gap-2 items-center">
-                        <ExportMenu onExport={(t) => handlePriceExport(t, priceMetrics.purchases)} />
-                        {renderDateFilter()}
-                    </div>
-                } 
-             />
-             
-             {/* Charts */}
-             <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-                 <Card title="Selling Price Trend (Avg/g)" delay={100} className="min-h-[400px]">
-                      <div className="h-full w-full">
-                          <ResponsiveContainer>
-                              <AreaChart data={priceMetrics.trendData}>
-                                  <defs>
-                                      <linearGradient id="colorSell" x1="0" y1="0" x2="0" y2="1">
-                                          <stop offset="5%" stopColor="#d19726" stopOpacity={0.2}/>
-                                          <stop offset="95%" stopColor="#d19726" stopOpacity={0}/>
-                                      </linearGradient>
-                                  </defs>
-                                  <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
-                                  <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
-                                  <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} tickFormatter={(v) => `₹${v}`}/>
-                                  <Tooltip contentStyle={{borderRadius: '12px'}} formatter={(val:number) => [formatCurrency(val), 'Avg Sell Price']}/>
-                                  <Area type="monotone" dataKey="avgSellPrice" stroke="#b4761e" fill="url(#colorSell)" />
-                              </AreaChart>
-                          </ResponsiveContainer>
-                      </div>
-                 </Card>
-                 
-                 <Card title="Supplier Cost Consistency" delay={200} className="min-h-[400px]">
-                      <div className="overflow-x-auto">
-                           <table className="w-full text-sm text-left">
-                               <thead className="text-slate-500 bg-slate-50/50">
+          <div className="grid grid-cols-1 xl:grid-cols-3 gap-6">
+               <div className="xl:col-span-1">
+                   <InvoiceForm onAdd={handleAddInvoice} currentStock={currentStock} lockDate={lockDate} />
+               </div>
+               
+               <div className="xl:col-span-2">
+                   <div className="bg-white rounded-2xl shadow-card border border-slate-100 flex flex-col overflow-hidden h-full min-h-[500px]">
+                       <div className="px-6 py-4 border-b border-slate-50 flex justify-between items-center bg-white/50 backdrop-blur sticky top-0 z-10">
+                           <h3 className="font-bold text-slate-800 flex items-center gap-2"><History className="w-4 h-4 text-slate-400"/> Recent Transactions</h3>
+                           <div className="text-xs font-medium text-slate-400">{filteredInvoices.length} records found</div>
+                       </div>
+                       
+                       <div className="overflow-auto flex-1">
+                           <table className="w-full text-left text-sm">
+                               <thead className="bg-slate-50/50 text-slate-500 font-medium border-b border-slate-100 sticky top-0 z-10">
                                    <tr>
-                                       <th className="px-4 py-3">Supplier</th>
-                                       <th className="px-4 py-3 text-right">Avg Rate</th>
-                                       <th className="px-4 py-3 text-right">Min Rate</th>
-                                       <th className="px-4 py-3 text-right">Max Rate</th>
-                                       <th className="px-4 py-3 text-right">Volatility (Spread)</th>
+                                       <th className="px-6 py-3">Date</th>
+                                       <th className="px-6 py-3">Party</th>
+                                       <th className="px-6 py-3 text-right">Qty (g)</th>
+                                       <th className="px-6 py-3 text-right">Rate</th>
+                                       <th className="px-6 py-3 text-right">Total</th>
+                                       <th className="px-6 py-3 text-center">Action</th>
                                    </tr>
                                </thead>
-                               <tbody>
-                                   {supplierData.map((s, i) => (
-                                       <tr key={i} className="hover:bg-slate-50 border-b border-slate-50">
-                                           <td className="px-4 py-3 font-medium">{s.name}</td>
-                                           <td className="px-4 py-3 text-right font-mono text-blue-600">{formatCurrency(s.avgRate)}</td>
-                                           <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(s.minRate)}</td>
-                                           <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(s.maxRate)}</td>
-                                           <td className="px-4 py-3 text-right font-mono font-bold text-slate-700">{formatCurrency(s.volatility)}</td>
-                                       </tr>
-                                   ))}
+                               <tbody className="divide-y divide-slate-50">
+                                   {filteredInvoices.length === 0 ? (
+                                       <tr><td colSpan={6} className="px-6 py-12 text-center text-slate-400">No transactions found in this period.</td></tr>
+                                   ) : (
+                                       filteredInvoices.map((inv) => (
+                                           <tr key={inv.id} className="hover:bg-slate-50/50 transition-colors group">
+                                               <td className="px-6 py-3 whitespace-nowrap text-slate-500 font-mono text-xs">{new Date(inv.date).toLocaleDateString('en-IN', {day: '2-digit', month: 'short'})}</td>
+                                               <td className="px-6 py-3">
+                                                   <div className="flex items-center gap-2">
+                                                       <div className={`w-1.5 h-1.5 rounded-full ${inv.type === 'SALE' ? 'bg-green-500' : 'bg-blue-500'}`}></div>
+                                                       <span className="font-medium text-slate-700">{inv.partyName}</span>
+                                                   </div>
+                                                   <div className="text-[10px] text-slate-400 ml-3.5">{inv.type}</div>
+                                               </td>
+                                               <td className="px-6 py-3 text-right font-mono text-slate-600">{formatGrams(inv.quantityGrams)}</td>
+                                               <td className="px-6 py-3 text-right font-mono text-slate-500">{formatCurrency(inv.ratePerGram)}</td>
+                                               <td className="px-6 py-3 text-right font-bold text-slate-900 font-mono">{formatCurrency(inv.totalAmount)}</td>
+                                               <td className="px-6 py-3 text-center">
+                                                   <button onClick={() => initiateDelete(inv.id)} className="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-lg transition-all opacity-0 group-hover:opacity-100">
+                                                       <Trash2 className="w-4 h-4"/>
+                                                   </button>
+                                               </td>
+                                           </tr>
+                                       ))
+                                   )}
                                </tbody>
                            </table>
-                      </div>
-                 </Card>
-             </div>
+                       </div>
+                   </div>
+               </div>
+          </div>
+      </div>
+  );
 
-             {/* Purchase Transaction Table */}
-             <Card title="Detailed Purchase Transactions" delay={300}>
-                  <div className="overflow-x-auto">
-                      <table className="w-full text-sm text-left">
-                          <thead className="text-slate-500 bg-slate-50/50">
-                              <tr>
-                                  <th className="px-4 py-3">Date</th>
-                                  <th className="px-4 py-3">Supplier</th>
-                                  <th className="px-4 py-3 text-right">Qty (g)</th>
-                                  <th className="px-4 py-3 text-right">Purchase Rate (₹/g)</th>
-                                  <th className="px-4 py-3 text-right">Taxable (Ex-Tax)</th>
-                              </tr>
-                          </thead>
-                          <tbody>
-                              {priceMetrics.purchases.length === 0 ? (<tr><td colSpan={5} className="text-center py-8 text-slate-400">No purchases in this period.</td></tr>) : 
-                                priceMetrics.purchases.sort((a,b) => new Date(b.date).getTime() - new Date(a.date).getTime()).map(inv => (
-                                  <tr key={inv.id} className="hover:bg-slate-50 border-b border-slate-50">
-                                      <td className="px-4 py-3 text-slate-500">{inv.date}</td>
-                                      <td className="px-4 py-3 font-medium">{inv.partyName}</td>
-                                      <td className="px-4 py-3 text-right font-mono">{formatGrams(inv.quantityGrams)}</td>
-                                      <td className="px-4 py-3 text-right font-mono text-blue-600">{formatCurrency(inv.ratePerGram)}</td>
-                                      <td className="px-4 py-3 text-right font-mono">{formatCurrency(inv.taxableAmount)}</td>
-                                  </tr>
-                              ))}
-                          </tbody>
-                      </table>
-                  </div>
-             </Card>
-        </div>
+  const AnalyticsView = () => (
+      <div className="space-y-6 animate-slide-up">
+          <SectionHeader title="Analytics" subtitle="Performance metrics and trend analysis." action={renderDateFilter()}/>
+          
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              <Card title="Sales vs Purchases (Volume)" className="min-h-[350px]">
+                  <ResponsiveContainer width="100%" height={300}>
+                      <BarChart data={(() => {
+                          const data = [];
+                          const start = new Date(dateRange.start);
+                          const end = new Date(dateRange.end);
+                          for (let d = new Date(start); d <= end; d.setDate(d.getDate() + 1)) {
+                              const dateStr = d.toISOString().split('T')[0];
+                              const dayInvoices = invoices.filter(i => i.date === dateStr);
+                              const sold = dayInvoices.filter(i => i.type === 'SALE').reduce((acc, i) => acc + i.quantityGrams, 0);
+                              const bought = dayInvoices.filter(i => i.type === 'PURCHASE').reduce((acc, i) => acc + i.quantityGrams, 0);
+                              if (sold > 0 || bought > 0) data.push({ date: d.toLocaleDateString('en-IN', { day: '2-digit', month: 'short' }), Sold: sold, Bought: bought });
+                          }
+                          return data;
+                      })()}>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
+                          <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
+                          <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
+                          <Tooltip contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'}} cursor={{fill: '#f8fafc'}}/>
+                          <Legend />
+                          <Bar dataKey="Sold" fill="#10b981" radius={[4, 4, 0, 0]} />
+                          <Bar dataKey="Bought" fill="#3b82f6" radius={[4, 4, 0, 0]} />
+                      </BarChart>
+                  </ResponsiveContainer>
+              </Card>
+
+              <Card title="Inventory Aging Distribution" className="min-h-[350px]">
+                   <ResponsiveContainer width="100%" height={300}>
+                       <PieChart>
+                           <Pie 
+                                data={[
+                                    { name: '< 7 Days', value: agingStats.buckets['0-7'], color: '#10b981' },
+                                    { name: '8-15 Days', value: agingStats.buckets['8-15'], color: '#3b82f6' },
+                                    { name: '16-30 Days', value: agingStats.buckets['16-30'], color: '#f59e0b' },
+                                    { name: '> 30 Days', value: agingStats.buckets['30+'], color: '#ef4444' }
+                                ].filter(d => d.value > 0)}
+                                dataKey="value"
+                                nameKey="name"
+                                cx="50%"
+                                cy="50%"
+                                outerRadius={100}
+                                innerRadius={60}
+                                paddingAngle={5}
+                           >
+                               {[
+                                    { name: '< 7 Days', value: agingStats.buckets['0-7'], color: '#10b981' },
+                                    { name: '8-15 Days', value: agingStats.buckets['8-15'], color: '#3b82f6' },
+                                    { name: '16-30 Days', value: agingStats.buckets['16-30'], color: '#f59e0b' },
+                                    { name: '> 30 Days', value: agingStats.buckets['30+'], color: '#ef4444' }
+                                ].filter(d => d.value > 0).map((entry, index) => (
+                                   <Cell key={`cell-${index}`} fill={entry.color} strokeWidth={0} />
+                               ))}
+                           </Pie>
+                           <Tooltip />
+                           <Legend verticalAlign="bottom" height={36}/>
+                       </PieChart>
+                   </ResponsiveContainer>
+              </Card>
+          </div>
+          
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+              <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
+                  <p className="text-xs font-bold text-slate-400 uppercase mb-1">Turnover Ratio</p>
+                  <p className="text-2xl font-mono font-bold text-slate-900">{turnoverStats.turnoverRatio.toFixed(2)}x</p>
+              </div>
+              <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
+                  <p className="text-xs font-bold text-slate-400 uppercase mb-1">Avg Days to Sell</p>
+                  <p className="text-2xl font-mono font-bold text-slate-900">{turnoverStats.avgDaysToSell.toFixed(0)} Days</p>
+              </div>
+              <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
+                  <p className="text-xs font-bold text-slate-400 uppercase mb-1">Weighted Avg Age</p>
+                  <p className="text-2xl font-mono font-bold text-slate-900">{agingStats.weightedAvgDays.toFixed(0)} Days</p>
+              </div>
+               <div className="p-4 bg-white rounded-xl border border-slate-100 shadow-sm">
+                  <p className="text-xs font-bold text-slate-400 uppercase mb-1">Profit Margin</p>
+                  <p className={`text-2xl font-mono font-bold ${turnoverStats.totalCOGS > 0 && totalProfit > 0 ? 'text-green-600' : 'text-slate-900'}`}>
+                      {turnoverStats.totalCOGS > 0 ? ((totalProfit / turnoverStats.totalCOGS) * 100).toFixed(2) : 0}%
+                  </p>
+              </div>
+          </div>
+      </div>
+  );
+
+  const PriceAnalysisView = () => {
+      const purchases = filteredInvoices.filter(i => i.type === 'PURCHASE').sort((a,b) => new Date(a.date).getTime() - new Date(b.date).getTime());
+      
+      return (
+          <div className="space-y-6 animate-slide-up">
+              <SectionHeader title="Price Analysis" subtitle="Gold rate trends based on your purchases." action={<div className="flex gap-2 items-center"><ExportMenu onExport={(t) => handlePriceExport(t, purchases)} />{renderDateFilter()}</div>}/>
+              
+              <Card title="Gold Rate Trend (Purchases)" className="min-h-[400px]">
+                  <ResponsiveContainer width="100%" height={350}>
+                      <AreaChart data={purchases}>
+                          <defs><linearGradient id="colorRate" x1="0" y1="0" x2="0" y2="1"><stop offset="5%" stopColor="#eab308" stopOpacity={0.2}/><stop offset="95%" stopColor="#eab308" stopOpacity={0}/></linearGradient></defs>
+                          <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
+                          <XAxis dataKey="date" tickFormatter={(d) => new Date(d).toLocaleDateString('en-IN', {day: '2-digit', month: 'short'})} axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
+                          <YAxis domain={['auto', 'auto']} axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}}/>
+                          <Tooltip contentStyle={{borderRadius: '12px', border: 'none', boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'}} formatter={(value: number) => [formatCurrency(value), 'Rate/g']}/>
+                          <Area type="monotone" dataKey="ratePerGram" stroke="#eab308" strokeWidth={3} fillOpacity={1} fill="url(#colorRate)" />
+                      </AreaChart>
+                  </ResponsiveContainer>
+              </Card>
+
+              <div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden">
+                   <div className="px-6 py-4 border-b border-slate-50 font-bold text-slate-800">Purchase History</div>
+                   <table className="w-full text-left text-sm">
+                        <thead className="bg-slate-50 text-slate-500 font-medium"><tr><th className="px-6 py-3">Date</th><th className="px-6 py-3">Supplier</th><th className="px-6 py-3 text-right">Qty</th><th className="px-6 py-3 text-right">Rate</th></tr></thead>
+                        <tbody>
+                            {purchases.map(p => (
+                                <tr key={p.id} className="border-b border-slate-50 last:border-0 hover:bg-slate-50/50">
+                                    <td className="px-6 py-3 text-slate-500">{p.date}</td>
+                                    <td className="px-6 py-3 font-medium text-slate-700">{p.partyName}</td>
+                                    <td className="px-6 py-3 text-right font-mono">{formatGrams(p.quantityGrams)}</td>
+                                    <td className="px-6 py-3 text-right font-mono font-bold text-slate-900">{formatCurrency(p.ratePerGram)}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                   </table>
+              </div>
+          </div>
       );
   };
 
-  const AnalyticsView = () => {
-      // ... existing AnalyticsView code
-      const realizedProfit = totalProfit; // FIFO profit from closed sales
-      const rate = parseFloat(marketRate);
-      const hasRate = !isNaN(rate) && rate > 0;
-      const unrealizedProfit = hasRate ? (currentStock * rate) - fifoValue : 0;
-      
-      const pieData = customerData.slice(0, 5).map(c => ({ name: c.name, value: c.totalGrams }));
-      const others = customerData.slice(5).reduce((acc, c) => acc + c.totalGrams, 0);
-      if (others > 0) pieData.push({ name: 'Others', value: others });
-      const COLORS = ['#d19726', '#e4c76d', '#b4761e', '#f5eccb', '#90561a', '#94a3b8'];
-
-      return (
-      <div className="space-y-8">
-          <SectionHeader 
-             title="Analytics & Reports" 
-             subtitle="Deep dive into your business performance." 
-             action={
-                 <div className="flex gap-2 items-center">
-                    <ExportMenu onExport={(t) => addToast('SUCCESS', 'For detailed exports, use specific sections or Generate PDF below.')} />
-                    {renderDateFilter()}
-                 </div>
-             } 
-          />
-
-          {/* Cash & Turnover Analytics */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-              <StatsCard title="Inventory Turnover" value={`${turnoverStats.turnoverRatio.toFixed(2)}x`} subValue="Ratio (COGS / Avg Inv)" icon={Activity} isActive />
-              <StatsCard title="Avg Days to Sell" value={`${Math.round(turnoverStats.avgDaysToSell)} Days`} subValue="Velocity" icon={Timer} />
-              <StatsCard title="Realized Profit" value={formatCurrency(realizedProfit)} subValue="From Sales" icon={Wallet} />
-              <div className="bg-slate-900 rounded-2xl p-6 text-white relative overflow-hidden flex flex-col justify-center">
-                   <div className="absolute top-0 right-0 w-24 h-24 bg-gold-500/20 rounded-full blur-3xl -mr-8 -mt-8"></div>
-                   <p className="text-xs font-bold text-slate-400 uppercase tracking-widest mb-2">Unrealized Profit (Est)</p>
-                   <div className="flex items-end gap-2 mb-2">
-                       <input 
-                          type="number" 
-                          placeholder="Mkt Rate..." 
-                          value={marketRate} 
-                          onChange={(e) => setMarketRate(e.target.value)} 
-                          className="w-24 bg-slate-800 border border-slate-700 rounded px-2 py-1 text-sm text-white focus:border-gold-500 outline-none"
-                       />
-                   </div>
-                   <h3 className={`text-2xl font-mono font-bold ${unrealizedProfit >= 0 ? 'text-green-400' : 'text-red-400'}`}>
-                       {hasRate ? formatCurrency(unrealizedProfit) : '---'}
-                   </h3>
-              </div>
+  const CustomerInsightsView = () => (
+      <div className="space-y-6 animate-slide-up">
+          <SectionHeader title="Customer Insights" subtitle="Identify top buyers and behavior patterns." action={<div className="flex gap-2 items-center"><ExportMenu onExport={handleCustomerExport} />{renderDateFilter()}</div>}/>
+          
+          <div className="grid grid-cols-1 gap-6">
+              {/* Top Cards for key metrics could go here */}
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 md:gap-6">
-               {[
-                   { id: 'CUSTOMER', title: 'Customer Report', icon: Users, color: 'text-purple-600', bg: 'bg-purple-50' },
-                   { id: 'SUPPLIER', title: 'Supplier Report', icon: Factory, color: 'text-blue-600', bg: 'bg-blue-50' },
-                   { id: 'CONSOLIDATED', title: 'Full Audit', icon: FileText, color: 'text-gold-600', bg: 'bg-gold-50' }
-               ].map((rpt, i) => (
-                   <div key={rpt.id} onClick={() => {}} className="group bg-white p-6 rounded-2xl border border-slate-100 shadow-card hover:shadow-lg transition-all cursor-pointer flex items-center gap-5 animate-slide-up" style={{ animationDelay: `${i*100}ms` }}>
-                       <div className={`p-4 rounded-xl ${rpt.bg} ${rpt.color} group-hover:scale-110 transition-transform`}>
-                           <rpt.icon className="w-6 h-6"/>
-                       </div>
-                       <div>
-                           <h3 className="font-bold text-slate-900 text-lg">{rpt.title}</h3>
-                           <p className="text-slate-400 text-sm mt-0.5">Generate PDF</p>
-                       </div>
-                       <div className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity -translate-x-2 group-hover:translate-x-0">
-                           <Download className="w-5 h-5 text-slate-300"/>
-                       </div>
-                   </div>
-               ))}
-          </div>
-
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-              <Card title="Profit Trajectory" className="lg:col-span-2" delay={300}>
-                  <div className="h-64 md:h-80 w-full">
-                      <ResponsiveContainer>
-                          <AreaChart data={profitTrendData}>
-                              <defs>
-                                  <linearGradient id="colorProfit" x1="0" y1="0" x2="0" y2="1">
-                                      <stop offset="5%" stopColor="#10b981" stopOpacity={0.2}/>
-                                      <stop offset="95%" stopColor="#10b981" stopOpacity={0}/>
-                                  </linearGradient>
-                              </defs>
-                              <CartesianGrid strokeDasharray="3 3" vertical={false} stroke="#f1f5f9"/>
-                              <XAxis dataKey="date" axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10, dy: 10}}/>
-                              <YAxis axisLine={false} tickLine={false} tick={{fill: '#94a3b8', fontSize: 10}} tickFormatter={(v) => `${v/1000}k`}/>
-                              <Tooltip 
-                                  contentStyle={{backgroundColor: '#fff', borderRadius: '12px', border: 'none', boxShadow: '0 10px 15px -3px rgba(0, 0, 0, 0.1)'}} 
-                                  formatter={(value: number) => [formatCurrency(value), 'Net Profit']}
-                              />
-                              <Area type="monotone" dataKey="profit" stroke="#10b981" strokeWidth={3} fillOpacity={1} fill="url(#colorProfit)" />
-                          </AreaChart>
-                      </ResponsiveContainer>
-                  </div>
-              </Card>
-
-              <Card title="Customer Volume Share" className="lg:col-span-1 min-h-[300px]" delay={400}>
-                 <ResponsiveContainer width="100%" height={300}>
-                     <PieChart>
-                         <Pie data={pieData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                             {pieData.map((entry, index) => (
-                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                             ))}
-                         </Pie>
-                         <Tooltip formatter={(val:number) => formatGrams(val)} contentStyle={{borderRadius: '8px'}} />
-                         <Legend verticalAlign="bottom" height={36}/>
-                     </PieChart>
-                 </ResponsiveContainer>
-              </Card>
+          <div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden">
+               <div className="overflow-x-auto">
+                   <table className="w-full text-left text-sm">
+                       <thead className="bg-slate-50 text-slate-500 font-medium">
+                           <tr>
+                               <th className="px-6 py-3">Customer Name</th>
+                               <th className="px-6 py-3 text-center">Freq</th>
+                               <th className="px-6 py-3 text-right">Total Vol</th>
+                               <th className="px-6 py-3 text-right">Total Revenue (Ex GST)</th>
+                               <th className="px-6 py-3 text-right">Avg Price</th>
+                               <th className="px-6 py-3 text-right">Margin %</th>
+                               <th className="px-6 py-3">Pattern</th>
+                           </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-50">
+                           {customerData.map((c, i) => (
+                               <tr key={i} className="hover:bg-slate-50/50">
+                                   <td className="px-6 py-3 font-bold text-slate-700">{c.name}</td>
+                                   <td className="px-6 py-3 text-center"><span className="bg-slate-100 text-slate-600 px-2 py-0.5 rounded text-xs font-bold">{c.txCount}</span></td>
+                                   <td className="px-6 py-3 text-right font-mono text-slate-600">{formatGrams(c.totalGrams)}</td>
+                                   <td className="px-6 py-3 text-right font-mono font-medium text-slate-900">{formatCurrency(c.totalSpend)}</td>
+                                   <td className="px-6 py-3 text-right font-mono text-slate-500 text-xs">{formatCurrency(c.avgSellingPrice || 0)}</td>
+                                   <td className={`px-6 py-3 text-right font-mono font-bold ${c.margin && c.margin > 1 ? 'text-green-600' : 'text-amber-600'}`}>{(c.margin || 0).toFixed(2)}%</td>
+                                   <td className="px-6 py-3"><span className="text-[10px] uppercase font-bold tracking-wider text-slate-400 bg-slate-50 px-2 py-1 rounded border border-slate-100">{c.behaviorPattern}</span></td>
+                               </tr>
+                           ))}
+                       </tbody>
+                   </table>
+               </div>
           </div>
       </div>
-  )};
+  );
 
-  const SupplierInsightsView = () => {
-    // ... existing SupplierInsightsView code
-    const { volumeData, valueData } = useMemo(() => {
-        const sortedByVol = [...supplierData].sort((a,b) => b.totalGramsPurchased - a.totalGramsPurchased);
-        const sortedByVal = [...supplierData].sort((a,b) => (b.totalGramsPurchased * b.avgRate) - (a.totalGramsPurchased * a.avgRate));
-
-        const generatePie = (data: typeof supplierData, metric: 'vol' | 'val') => {
-            const mapped = data.map(s => ({
-                name: s.name,
-                value: metric === 'vol' ? s.totalGramsPurchased : (s.totalGramsPurchased * s.avgRate)
-            }));
-            const top = mapped.slice(0, 5);
-            const others = mapped.slice(5).reduce((acc, curr) => acc + curr.value, 0);
-            if(others > 0) top.push({ name: 'Others', value: others });
-            return top;
-        };
-
-        return {
-            volumeData: generatePie(sortedByVol, 'vol'),
-            valueData: generatePie(sortedByVal, 'val')
-        };
-    }, [supplierData]);
-
-    const COLORS = ['#3b82f6', '#06b6d4', '#10b981', '#f59e0b', '#6366f1', '#94a3b8'];
-
-    return (
-      <div className="space-y-6 animate-enter">
-        <SectionHeader 
-             title="Supplier Performance" 
-             subtitle="Track procurement costs and volatility." 
-             action={
-                 <div className="flex gap-2 items-center">
-                    <ExportMenu onExport={handleSupplierExport} />
-                    {renderDateFilter()}
-                 </div>
-             }
-        />
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {supplierData.slice(0, 4).map((s, i) => (
-                <div key={i} className="bg-white p-6 rounded-2xl shadow-card border border-slate-100 flex flex-col justify-between">
-                     <div className="flex justify-between items-start mb-4">
-                         <div>
-                             <h3 className="font-bold text-lg text-slate-900">{s.name}</h3>
-                             <p className="text-xs text-slate-500 uppercase tracking-wide">Primary Supplier</p>
-                         </div>
-                         <div className="p-2 bg-blue-50 text-blue-600 rounded-lg"><Factory className="w-5 h-5"/></div>
-                     </div>
-                     <div className="space-y-3">
-                         <div className="flex justify-between text-sm"><span className="text-slate-500">Total Volume</span><span className="font-mono font-bold">{formatGrams(s.totalGramsPurchased)}</span></div>
-                         <div className="flex justify-between text-sm"><span className="text-slate-500">Avg Rate</span><span className="font-mono font-bold text-blue-600">{formatCurrency(s.avgRate)}</span></div>
-                         <div className="flex justify-between text-sm"><span className="text-slate-500">Volatility</span><span className="font-mono font-bold text-amber-600">± {formatCurrency(s.volatility)}</span></div>
-                     </div>
-                </div>
-            ))}
-        </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-             <Card title="Volume Dependency (Grams)" delay={300} className="min-h-[350px]">
-                <ResponsiveContainer width="100%" height={300}>
-                     <PieChart>
-                         <Pie data={volumeData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                             {volumeData.map((entry, index) => (
-                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                             ))}
-                         </Pie>
-                         <Tooltip formatter={(val:number) => formatGrams(val)} contentStyle={{borderRadius: '8px'}} />
-                         <Legend verticalAlign="bottom" height={36}/>
-                     </PieChart>
-                 </ResponsiveContainer>
-             </Card>
-             <Card title="Capital Allocation (Cost)" delay={400} className="min-h-[350px]">
-                <ResponsiveContainer width="100%" height={300}>
-                     <PieChart>
-                         <Pie data={valueData} cx="50%" cy="50%" innerRadius={60} outerRadius={80} paddingAngle={5} dataKey="value">
-                             {valueData.map((entry, index) => (
-                                 <Cell key={`cell-${index}`} fill={COLORS[index % COLORS.length]} />
-                             ))}
-                         </Pie>
-                         <Tooltip formatter={(val:number) => formatCurrency(val)} contentStyle={{borderRadius: '8px'}} />
-                         <Legend verticalAlign="bottom" height={36}/>
-                     </PieChart>
-                 </ResponsiveContainer>
-             </Card>
-        </div>
-
-        <Card title="Procurement History">
-            {/* Reusing the table from Price Analysis mostly, but focused on stats */}
-             <table className="w-full text-sm text-left">
-                <thead className="text-slate-500 bg-slate-50/50">
-                    <tr>
-                        <th className="px-4 py-3">Supplier</th>
-                        <th className="px-4 py-3 text-center">Tx Count</th>
-                        <th className="px-4 py-3 text-right">Volume (g)</th>
-                        <th className="px-4 py-3 text-right">Avg Rate</th>
-                        <th className="px-4 py-3 text-right">Min Rate</th>
-                        <th className="px-4 py-3 text-right">Max Rate</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {supplierData.map((s, i) => (
-                        <tr key={i} className="border-b border-slate-50 hover:bg-slate-50">
-                            <td className="px-4 py-3 font-bold text-slate-800">{s.name}</td>
-                            <td className="px-4 py-3 text-center text-slate-500">{s.txCount}</td>
-                            <td className="px-4 py-3 text-right font-mono">{formatGrams(s.totalGramsPurchased)}</td>
-                            <td className="px-4 py-3 text-right font-mono">{formatCurrency(s.avgRate)}</td>
-                            <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(s.minRate)}</td>
-                            <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(s.maxRate)}</td>
-                        </tr>
-                    ))}
-                </tbody>
-             </table>
-        </Card>
+  const SupplierInsightsView = () => (
+      <div className="space-y-6 animate-slide-up">
+           <SectionHeader title="Supplier Insights" subtitle="Analyze procurement sources and costs." action={<div className="flex gap-2 items-center"><ExportMenu onExport={handleSupplierExport} />{renderDateFilter()}</div>}/>
+           
+           <div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden">
+               <div className="overflow-x-auto">
+                   <table className="w-full text-left text-sm">
+                       <thead className="bg-slate-50 text-slate-500 font-medium">
+                           <tr>
+                               <th className="px-6 py-3">Supplier Name</th>
+                               <th className="px-6 py-3 text-center">Tx Count</th>
+                               <th className="px-6 py-3 text-right">Total Purchased</th>
+                               <th className="px-6 py-3 text-right">Avg Rate</th>
+                               <th className="px-6 py-3 text-right">Rate Range (Min - Max)</th>
+                               <th className="px-6 py-3 text-right">Volatility</th>
+                           </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-50">
+                           {supplierData.map((s, i) => (
+                               <tr key={i} className="hover:bg-slate-50/50">
+                                   <td className="px-6 py-3 font-bold text-slate-700">{s.name}</td>
+                                   <td className="px-6 py-3 text-center text-slate-500">{s.txCount}</td>
+                                   <td className="px-6 py-3 text-right font-mono text-slate-600">{formatGrams(s.totalGramsPurchased)}</td>
+                                   <td className="px-6 py-3 text-right font-mono font-medium text-slate-900">{formatCurrency(s.avgRate)}</td>
+                                   <td className="px-6 py-3 text-right font-mono text-xs text-slate-500">{formatCurrency(s.minRate)} - {formatCurrency(s.maxRate)}</td>
+                                   <td className="px-6 py-3 text-right font-mono text-slate-400">{formatCurrency(s.volatility)}</td>
+                               </tr>
+                           ))}
+                       </tbody>
+                   </table>
+               </div>
+           </div>
       </div>
-    );
-  };
+  );
 
   const BusinessLedgerView = () => {
-      // ... existing BusinessLedgerView code
-      const { monthlyData, totals } = useMemo(() => {
-          const stats: Record<string, { turnover: number, profit: number, tax: number, qty: number }> = {};
-          let totalTurnover = 0;
-          let totalProfit = 0;
-          let totalQty = 0;
-
+      const monthlyStats = useMemo(() => {
+          const stats: Record<string, { date: Date, turnover: number, profit: number, qty: number }> = {};
           invoices.filter(i => i.type === 'SALE').forEach(inv => {
-              const d = new Date(inv.date);
-              const key = `${d.getFullYear()}-${d.getMonth()}`; // YYYY-M
-              if (!stats[key]) stats[key] = { turnover: 0, profit: 0, tax: 0, qty: 0 };
-              
-              stats[key].turnover += inv.taxableAmount; // Changed to Taxable Amount (Ex-GST)
-              stats[key].profit += (inv.profit || 0);
-              stats[key].tax += inv.gstAmount;
-              stats[key].qty += inv.quantityGrams;
-
-              totalTurnover += inv.taxableAmount; // Changed to Taxable Amount (Ex-GST)
-              totalProfit += (inv.profit || 0);
-              totalQty += inv.quantityGrams;
+               const d = new Date(inv.date);
+               const key = `${d.getFullYear()}-${d.getMonth()}`;
+               if (!stats[key]) stats[key] = { date: new Date(d.getFullYear(), d.getMonth(), 1), turnover: 0, profit: 0, qty: 0 };
+               stats[key].turnover += inv.taxableAmount || 0;
+               stats[key].profit += inv.profit || 0;
+               stats[key].qty += inv.quantityGrams;
           });
-
-          const monthly = Object.entries(stats).map(([key, val]) => {
-              const [y, m] = key.split('-');
-              return {
-                  date: new Date(parseInt(y), parseInt(m), 1),
-                  ...val
-              };
-          }).sort((a,b) => b.date.getTime() - a.date.getTime());
-
-          return { 
-              monthlyData: monthly, 
-              totals: { turnover: totalTurnover, profit: totalProfit, qty: totalQty, margin: totalTurnover > 0 ? (totalProfit/totalTurnover)*100 : 0 }
-          };
+          return Object.values(stats).sort((a,b) => b.date.getTime() - a.date.getTime());
       }, [invoices]);
 
-      return (
-          <div className="space-y-6 animate-enter">
-              <SectionHeader 
-                   title="Business Ledger" 
-                   subtitle="Monthly financial breakdown and performance." 
-                   action={<ExportMenu onExport={(t) => handleLedgerExport(t, monthlyData, totals)} />}
-              />
+      const totals = monthlyStats.reduce((acc, m) => ({ turnover: acc.turnover + m.turnover, profit: acc.profit + m.profit, qty: acc.qty + m.qty }), { turnover: 0, profit: 0, qty: 0 });
+      const totalMargin = totals.turnover > 0 ? (totals.profit / totals.turnover) * 100 : 0;
 
-              <div className="bg-slate-900 rounded-2xl p-8 text-white flex flex-col md:flex-row justify-between items-center shadow-2xl shadow-slate-900/20 mb-6">
-                  <div className="text-center md:text-left mb-6 md:mb-0">
-                      <p className="text-slate-400 font-bold uppercase tracking-widest text-xs mb-2">Lifetime Turnover (Ex GST)</p>
-                      <h2 className="text-4xl md:text-5xl font-mono font-bold text-white mb-1">{formatCurrency(totals.turnover)}</h2>
-                      <p className="text-gold-400 font-medium">Net Profit: {formatCurrency(totals.profit)} ({totals.margin.toFixed(2)}%)</p>
-                  </div>
-                  <div className="flex gap-8 border-t md:border-t-0 md:border-l border-slate-700 pt-6 md:pt-0 md:pl-8">
-                       <div>
-                           <p className="text-slate-500 text-xs font-bold uppercase mb-1">Total Gold Sold</p>
-                           <p className="text-2xl font-mono font-bold">{formatGrams(totals.qty)}</p>
-                       </div>
-                       <div>
-                           <p className="text-slate-500 text-xs font-bold uppercase mb-1">Active Batches</p>
-                           <p className="text-2xl font-mono font-bold">{inventory.filter(b => b.remainingQuantity > 0).length}</p>
-                       </div>
-                  </div>
+      return (
+          <div className="space-y-6 animate-slide-up">
+              <SectionHeader title="Business Ledger" subtitle="Lifetime monthly performance." action={<div className="flex gap-2 items-center"><ExportMenu onExport={(t) => handleLedgerExport(t, monthlyStats, {...totals, margin: totalMargin})} /></div>}/>
+
+              <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-2">
+                   <div className="p-4 bg-slate-900 rounded-xl text-white shadow-lg">
+                       <p className="text-xs text-slate-400 font-bold uppercase mb-1">Lifetime Sales</p>
+                       <p className="text-2xl font-mono font-bold">{formatCurrency(totals.turnover)}</p>
+                   </div>
+                   <div className="p-4 bg-slate-800 rounded-xl text-white shadow-lg">
+                       <p className="text-xs text-slate-400 font-bold uppercase mb-1">Lifetime Profit</p>
+                       <p className="text-2xl font-mono font-bold text-green-400">{formatCurrency(totals.profit)}</p>
+                   </div>
+                    <div className="p-4 bg-white border border-slate-200 rounded-xl text-slate-900">
+                       <p className="text-xs text-slate-400 font-bold uppercase mb-1">Volume Sold</p>
+                       <p className="text-2xl font-mono font-bold">{formatGrams(totals.qty)}</p>
+                   </div>
+                   <div className="p-4 bg-white border border-slate-200 rounded-xl text-slate-900">
+                       <p className="text-xs text-slate-400 font-bold uppercase mb-1">Overall Margin</p>
+                       <p className="text-2xl font-mono font-bold text-slate-900">{totalMargin.toFixed(2)}%</p>
+                   </div>
               </div>
 
-              <Card title="Monthly Breakdown">
-                  <div className="overflow-x-auto">
-                      <table className="w-full text-sm text-left">
-                          <thead className="text-slate-500 bg-slate-50/50">
-                              <tr>
-                                  <th className="px-4 py-3">Month</th>
-                                  <th className="px-4 py-3 text-right">Turnover (Ex GST)</th>
-                                  <th className="px-4 py-3 text-right">GST Collected</th>
-                                  <th className="px-4 py-3 text-right">Net Profit</th>
-                                  <th className="px-4 py-3 text-right">Margin %</th>
-                                  <th className="px-4 py-3 text-right">Qty Sold</th>
-                              </tr>
-                          </thead>
-                          <tbody>
-                              {monthlyData.map((m, i) => (
-                                  <tr key={i} className="hover:bg-slate-50 border-b border-slate-50">
-                                      <td className="px-4 py-3 font-bold text-slate-800">{m.date.toLocaleDateString('en-IN', { month: 'long', year: 'numeric' })}</td>
-                                      <td className="px-4 py-3 text-right font-mono text-slate-700">{formatCurrency(m.turnover)}</td>
-                                      <td className="px-4 py-3 text-right font-mono text-slate-500">{formatCurrency(m.tax)}</td>
-                                      <td className="px-4 py-3 text-right font-mono text-green-600 font-bold">{formatCurrency(m.profit)}</td>
-                                      <td className="px-4 py-3 text-right font-mono">
-                                          <span className={`px-2 py-1 rounded text-xs font-bold ${m.turnover > 0 && (m.profit/m.turnover) > 0.01 ? 'bg-green-100 text-green-700' : 'bg-slate-100 text-slate-600'}`}>
-                                              {(m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2)}%
-                                          </span>
-                                      </td>
-                                      <td className="px-4 py-3 text-right font-mono text-slate-600">{formatGrams(m.qty)}</td>
-                                  </tr>
-                              ))}
-                          </tbody>
-                      </table>
-                  </div>
-              </Card>
+              <div className="bg-white rounded-2xl shadow-card border border-slate-100 overflow-hidden">
+                   <table className="w-full text-left text-sm">
+                       <thead className="bg-slate-50 text-slate-500 font-medium">
+                           <tr>
+                               <th className="px-6 py-3">Month</th>
+                               <th className="px-6 py-3 text-right">Turnover (Ex GST)</th>
+                               <th className="px-6 py-3 text-right">Profit</th>
+                               <th className="px-6 py-3 text-right">Margin</th>
+                               <th className="px-6 py-3 text-right">Volume</th>
+                           </tr>
+                       </thead>
+                       <tbody className="divide-y divide-slate-50">
+                           {monthlyStats.map((m, i) => (
+                               <tr key={i} className="hover:bg-slate-50/50">
+                                   <td className="px-6 py-3 font-bold text-slate-700">{m.date.toLocaleDateString('en-IN', {month: 'long', year: 'numeric'})}</td>
+                                   <td className="px-6 py-3 text-right font-mono font-medium">{formatCurrency(m.turnover)}</td>
+                                   <td className="px-6 py-3 text-right font-mono font-bold text-green-600">{formatCurrency(m.profit)}</td>
+                                   <td className="px-6 py-3 text-right font-mono text-slate-500">{(m.turnover > 0 ? (m.profit/m.turnover)*100 : 0).toFixed(2)}%</td>
+                                   <td className="px-6 py-3 text-right font-mono text-slate-600">{formatGrams(m.qty)}</td>
+                               </tr>
+                           ))}
+                       </tbody>
+                   </table>
+              </div>
           </div>
       );
   };
+  
+  // Return Main Layout
+  if (!isDataLoaded) {
+      return (
+          <div className="h-screen w-full flex items-center justify-center bg-slate-50 flex-col gap-4">
+              <Loader2 className="w-10 h-10 text-gold-500 animate-spin" />
+              <p className="text-slate-500 font-medium animate-pulse">Synchronizing Secure Ledger...</p>
+          </div>
+      );
+  }
 
   return (
     <Layout activeTab={activeTab} onTabChange={setActiveTab} searchQuery={searchQuery} onSearch={setSearchQuery}>
         <Toast toasts={toasts} removeToast={removeToast} />
-        
         {/* Delete Modal */}
         {showDeleteModal && (
             <div className="fixed inset-0 z-[100] flex items-center justify-center bg-slate-900/40 backdrop-blur-sm animate-fade-in">
                 <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-sm border border-slate-200 animate-slide-up">
                     <div className="flex flex-col items-center text-center gap-3 mb-6">
-                        <div className="w-12 h-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center">
-                            <Lock className="w-6 h-6"/>
-                        </div>
-                        <div>
-                             <h3 className="text-lg font-bold text-slate-900">
-                                 {pendingDeleteIds.length > 0 ? `Delete ${pendingDeleteIds.length} Items?` : 'Secure Deletion'}
-                             </h3>
-                             <p className="text-xs text-slate-500 mt-1">Enter admin password to permanently delete.</p>
-                        </div>
+                        <div className="w-12 h-12 rounded-full bg-red-50 text-red-500 flex items-center justify-center"><Lock className="w-6 h-6"/></div>
+                        <div><h3 className="text-lg font-bold text-slate-900">{pendingDeleteIds.length > 0 ? `Delete ${pendingDeleteIds.length} Items?` : 'Secure Deletion'}</h3><p className="text-xs text-slate-500 mt-1">Enter admin password to permanently delete.</p></div>
                     </div>
-                    <input 
-                        type="password" 
-                        placeholder="Admin Password" 
-                        value={deletePassword}
-                        onChange={(e) => setDeletePassword(e.target.value)}
-                        className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-center mb-4 focus:ring-2 focus:ring-red-500/20 focus:border-red-500 outline-none"
-                    />
+                    <input type="password" placeholder="Admin Password" value={deletePassword} onChange={(e) => setDeletePassword(e.target.value)} className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold text-center mb-4 focus:ring-2 focus:ring-red-500/20 focus:border-red-500 outline-none" />
                     <div className="flex gap-3">
                         <button onClick={() => { setShowDeleteModal(false); setDeletePassword(''); setPendingDeleteIds([]); setDeleteId(null); }} className="flex-1 py-3 text-slate-500 font-bold hover:bg-slate-50 rounded-xl transition-colors text-sm">Cancel</button>
                         <button onClick={confirmDelete} className="flex-1 py-3 bg-red-600 text-white font-bold rounded-xl hover:bg-red-700 transition-colors shadow-lg shadow-red-600/20 text-sm">Delete</button>
@@ -1520,15 +991,7 @@ function App() {
             {activeTab === 'invoices' && <InvoicesView />}
             {activeTab === 'inventory' && (
                 <div className="animate-slide-up">
-                    <SectionHeader 
-                        title="Inventory Management" 
-                        action={
-                            <div className="flex gap-2 items-center">
-                                <ExportMenu onExport={handleInventoryExport} />
-                                {renderDateFilter()}
-                            </div>
-                        }
-                    />
+                    <SectionHeader title="Inventory Management" action={<div className="flex gap-2 items-center"><ExportMenu onExport={handleInventoryExport} />{renderDateFilter()}</div>}/>
                     <InventoryTable batches={filteredInventory}/>
                 </div>
             )}
